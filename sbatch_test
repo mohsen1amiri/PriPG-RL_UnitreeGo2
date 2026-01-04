@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+#SBATCH -A NAISS2024-22-1645 -p alvis
+#SBATCH -N 1 --gpus-per-node=A40:1
+#SBATCH -t 7-00:00:00
+source /cephyr/users/mohsena/Alvis/portal/vscode/Paper_CDC.sh
+
+isaacpy go2_reap_ppo_mpc.py \
+  --lr 3e-4 --gamma 0.995 \
+  --n_steps 2048 --batch_size 128 --n_epochs 10 --max_grad_norm 10.0 \
+  --mse_weight 1.0 --initial_beta 1.0 --end_iteration_number 50_000 \
+  --goal_reward 500 --crash_penalty 500 \
+  --w_progress 50 --w_time 0.01 --w_u 0.05 \
+  --safe_margin 0.15 --w_safe 5 --use_safety_penalty \
+  --net_layers 3 --net_nodes 256 \
+  & isaacpy go2_reap_ppo_mpc.py \
+  --lr 3e-4 --gamma 0.995 \
+  --n_steps 2048 --batch_size 128 --n_epochs 10 --max_grad_norm 10.0 \
+  --mse_weight 1.0 --initial_beta 1.0 --end_iteration_number 50_000 \
+  --goal_reward 5000 --crash_penalty 5000 \
+  --w_progress 100 --w_time 0.01 --w_u 0.05 \
+  --safe_margin 0.15 --w_safe 5 --use_safety_penalty \
+  --net_layers 3 --net_nodes 256 \
+  & isaacpy go2_reap_ppo_mpc.py \
+  --lr 3e-4 --gamma 0.995 \
+  --n_steps 2048 --batch_size 512 --n_epochs 10 --max_grad_norm 10.0 \
+  --mse_weight 1.0 --initial_beta 1.0 --end_iteration_number 50_000 \
+  --goal_reward 500 --crash_penalty 500 \
+  --w_progress 50 --w_time 0.01 --w_u 0.05 \
+  --safe_margin 0.15 --w_safe 5 --use_safety_penalty \
+  --net_layers 3 --net_nodes 256 \
+  & isaacpy go2_reap_ppo_mpc.py \
+  --lr 3e-4 --gamma 0.995 \
+  --n_steps 2048 --batch_size 512 --n_epochs 10 --max_grad_norm 10.0 \
+  --mse_weight 1.0 --initial_beta 1.0 --end_iteration_number 50_000 \
+  --goal_reward 5000 --crash_penalty 5000 \
+  --w_progress 100 --w_time 0.01 --w_u 0.05 \
+  --safe_margin 0.15 --w_safe 5 --use_safety_penalty \
+  --net_layers 3 --net_nodes 256 \
+  & isaacpy go2_reap_ppo_mpc.py \
+  --lr 3e-4 --gamma 0.995 \
+  --n_steps 4096 --batch_size 128 --n_epochs 10 --max_grad_norm 10.0 \
+  --mse_weight 1.0 --initial_beta 1.0 --end_iteration_number 50_000 \
+  --goal_reward 500 --crash_penalty 500 \
+  --w_progress 50 --w_time 0.01 --w_u 0.05 \
+  --safe_margin 0.15 --w_safe 5 --use_safety_penalty \
+  --net_layers 3 --net_nodes 256 \
+  & isaacpy go2_reap_ppo_mpc.py \
+  --lr 3e-4 --gamma 0.995 \
+  --n_steps 4096 --batch_size 128 --n_epochs 10 --max_grad_norm 10.0 \
+  --mse_weight 1.0 --initial_beta 1.0 --end_iteration_number 50_000 \
+  --goal_reward 5000 --crash_penalty 5000 \
+  --w_progress 100 --w_time 0.01 --w_u 0.05 \
+  --safe_margin 0.15 --w_safe 5 --use_safety_penalty \
+  --net_layers 3 --net_nodes 256 \
+  & isaacpy go2_reap_ppo_mpc.py \
+  --lr 3e-4 --gamma 0.995 \
+  --n_steps 4096 --batch_size 512 --n_epochs 10 --max_grad_norm 10.0 \
+  --mse_weight 1.0 --initial_beta 1.0 --end_iteration_number 50_000 \
+  --goal_reward 500 --crash_penalty 500 \
+  --w_progress 50 --w_time 0.01 --w_u 0.05 \
+  --safe_margin 0.15 --w_safe 5 --use_safety_penalty \
+  --net_layers 3 --net_nodes 256 \
+  & isaacpy go2_reap_ppo_mpc.py \
+  --lr 3e-4 --gamma 0.995 \
+  --n_steps 4096 --batch_size 512 --n_epochs 10 --max_grad_norm 10.0 \
+  --mse_weight 1.0 --initial_beta 1.0 --end_iteration_number 50_000 \
+  --goal_reward 5000 --crash_penalty 5000 \
+  --w_progress 100 --w_time 0.01 --w_u 0.05 \
+  --safe_margin 0.15 --w_safe 5 --use_safety_penalty \
+  --net_layers 3 --net_nodes 256 \
+  & wait
+
