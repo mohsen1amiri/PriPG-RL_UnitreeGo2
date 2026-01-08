@@ -72,6 +72,12 @@ from stable_baselines3.common.monitor import Monitor
 import argparse, json
 from datetime import datetime
 
+import matplotlib
+matplotlib.use("Agg")  # headless save-to-file backend
+import matplotlib.pyplot as plt
+from matplotlib.patches import Circle, Rectangle
+
+
 
 
 # Use our custom PPO_MPC instead of vanilla PPO
@@ -82,6 +88,10 @@ from isaacsim.core.api import World
 from isaacsim.core.prims import SingleArticulation
 from isaacsim.core.utils.stage import add_reference_to_stage
 from isaacsim.core.utils.nucleus import get_assets_root_path
+from isaacsim.core.api.objects import FixedCylinder, VisualSphere
+from isaacsim.core.api.objects import FixedCuboid
+
+
 
 
 
@@ -113,6 +123,9 @@ class REAP_Planner:
             [1.3,  -0.45, 0.43],
             [-1.3, -0.45, 0.43],
         ], dtype=np.float32)
+
+
+
 
 
         # --- SYMBOLIC MATH SETUP ---
@@ -347,13 +360,114 @@ class Go2MPCEnv(gym.Env):
             [-1.3, -0.45, 0.43],
         ], dtype=np.float32)
 
+        # ----------------------------
+        # Spawn REAL obstacles in Isaac Sim (static colliders)
+        # ----------------------------
+        self.obstacle_height = 1.0
+        self.obstacle_prims = []
+
+        for i, (ox, oy, r) in enumerate(self.OBSTACLES):
+            prim_path = f"/World/Obstacles/obs_{i}"
+            cyl = FixedCylinder(
+                prim_path=prim_path,
+                name=f"obs_{i}",  # <<< IMPORTANT: unique name
+                position=np.array([float(ox), float(oy), self.obstacle_height * 0.5]),
+                radius=float(r),
+                height=float(self.obstacle_height),
+                color=np.array([1.0, 0.2, 0.2]),
+            )
+            self.world.scene.add(cyl)
+            self.obstacle_prims.append(cyl)
+
+        # ----------------------------
+        # Visual-only goal marker (no collisions)
+        # ----------------------------
+        self.goal_marker = VisualSphere(
+            prim_path="/World/Goal",
+            name="goal",  # <<< IMPORTANT: unique name
+            position=np.array([float(self.target_pos[0]), float(self.target_pos[1]), 0.1]),
+            radius=0.12,
+            color=np.array([0.2, 1.0, 0.2]),
+        )
+        self.world.scene.add(self.goal_marker)
+
+
+
 
         # Boundaries (pick something that matches your map)
         self.x_min, self.x_max = -2.0, 2.0
         self.y_min, self.y_max = -2.0, 3.5
 
+        # ----------------------------
+        # Spawn REAL border walls in Isaac Sim (static colliders)
+        # ----------------------------
+        self.wall_thickness = 0.1
+        wall_thickness = self.wall_thickness    
+
+        wall_height = 1.0
+        z = wall_height * 0.5
+
+        xmin, xmax = float(self.x_min), float(self.x_max)
+        ymin, ymax = float(self.y_min), float(self.y_max)
+
+        xmid = 0.5 * (xmin + xmax)
+        ymid = 0.5 * (ymin + ymax)
+
+        xlen = (xmax - xmin) + 2 * wall_thickness
+        ylen = (ymax - ymin) + 2 * wall_thickness
+
+        self.border_walls = []
+
+        # Bottom wall (y = ymin)
+        self.border_walls.append(
+            FixedCuboid(
+                prim_path="/World/Borders/bottom",
+                name="border_bottom",
+                position=np.array([xmid, ymin - wall_thickness * 0.5, z]),
+                scale=np.array([xlen, wall_thickness, wall_height]),
+                color=np.array([0.2, 0.2, 1.0]),
+            )
+        )
+
+        # Top wall (y = ymax)
+        self.border_walls.append(
+            FixedCuboid(
+                prim_path="/World/Borders/top",
+                name="border_top",
+                position=np.array([xmid, ymax + wall_thickness * 0.5, z]),
+                scale=np.array([xlen, wall_thickness, wall_height]),
+                color=np.array([0.2, 0.2, 1.0]),
+            )
+        )
+
+        # Left wall (x = xmin)
+        self.border_walls.append(
+            FixedCuboid(
+                prim_path="/World/Borders/left",
+                name="border_left",
+                position=np.array([xmin - wall_thickness * 0.5, ymid, z]),
+                scale=np.array([wall_thickness, ylen, wall_height]),
+                color=np.array([0.2, 0.2, 1.0]),
+            )
+        )
+
+        # Right wall (x = xmax)
+        self.border_walls.append(
+            FixedCuboid(
+                prim_path="/World/Borders/right",
+                name="border_right",
+                position=np.array([xmax + wall_thickness * 0.5, ymid, z]),
+                scale=np.array([wall_thickness, ylen, wall_height]),
+                color=np.array([0.2, 0.2, 1.0]),
+            )
+        )
+
+        for w in self.border_walls:
+            self.world.scene.add(w)
+
+
         # Optional: episode timeout
-        self.max_steps = int(30.0 / self.DT_SIM)   # ~3000
+        self.max_steps = int(90.0 / self.DT_SIM)   # ~9000
         self.step_count = 0
 
 
@@ -378,7 +492,49 @@ class Go2MPCEnv(gym.Env):
         self.action_cost = 0.01    # extra penalty: -action_cost * ||u||^2
 
 
+
+        # ----------------------------
+        # Trajectory logging (2D plots)
+        # ----------------------------
+        self.save_trajectories = True          # master switch
+        self.traj_every = 1                    # save every N episodes (1 = every episode)
+        self.traj_dir = pathlib.Path("trajectories")  # will be overwritten from main()
+        self._episode_idx = 0
+        self._traj_xy = []                     # list of (x,y) during episode
+
+
+    
+
+
+
     # ------------- Helpers -------------
+
+
+
+
+
+    def _hit_border(self, obs_xy: np.ndarray):
+        """
+        Returns (hit: bool, side: str|None)
+        side in {"left","right","bottom","top"}.
+        """
+        x, y = float(obs_xy[0]), float(obs_xy[1])
+
+        # Inner faces of your walls are exactly at x_min/x_max/y_min/y_max
+        # Robot "hits" border when its center comes within robot_radius of that face.
+        margin = float(self.robot_radius) + 1e-3
+
+        if x <= self.x_min + margin:
+            return True, "left"
+        if x >= self.x_max - margin:
+            return True, "right"
+        if y <= self.y_min + margin:
+            return True, "bottom"
+        if y >= self.y_max - margin:
+            return True, "top"
+
+        return False, None
+
 
     def _max_step_positive_reward(self) -> float:
         """
@@ -463,6 +619,72 @@ class Go2MPCEnv(gym.Env):
             dmin = min(dmin, d)
         return dmin
 
+    def _save_episode_trajectory(self, event: str) -> None:
+        """
+        Save a 2D plot of the episode:
+        - obstacles (circles)
+        - boundary box (rectangle)
+        - trajectory points colored dark->light over time
+        - start / goal / end markers
+        """
+        if not self.save_trajectories:
+            return
+        if self._episode_idx % self.traj_every != 0:
+            return
+        if len(self._traj_xy) < 2:
+            return
+
+        self.traj_dir.mkdir(parents=True, exist_ok=True)
+
+        traj = np.asarray(self._traj_xy, dtype=np.float32)  # (T,2)
+        t = np.linspace(0.0, 1.0, traj.shape[0], dtype=np.float32)  # 0=start, 1=end
+
+        fig, ax = plt.subplots(figsize=(7, 7))
+
+        # ---- Draw boundaries as a rectangle ----
+        ax.add_patch(
+            Rectangle(
+                (self.x_min, self.y_min),
+                self.x_max - self.x_min,
+                self.y_max - self.y_min,
+                fill=False,
+                linewidth=2,
+            )
+        )
+
+        # ---- Draw obstacles as circles ----
+        for (ox, oy, r) in self.OBSTACLES:
+            ax.add_patch(Circle((float(ox), float(oy)), float(r), fill=False, linewidth=2))
+
+        # ---- Trajectory: faint line + time-colored points (dark->light) ----
+        ax.plot(traj[:, 0], traj[:, 1], linewidth=1, alpha=0.25)
+
+        ax.scatter(
+            traj[:, 0], traj[:, 1],
+            c=t,
+            cmap="Greys_r",   # start dark, end light
+            s=12,
+            linewidths=0
+        )
+
+        # ---- Start / Goal / End ----
+        ax.scatter(traj[0, 0], traj[0, 1], marker="*", s=140, label="start")
+        ax.scatter(self.target_pos[0], self.target_pos[1], marker="o", s=90, label="goal")
+        ax.scatter(traj[-1, 0], traj[-1, 1], marker="x", s=90, label="end")
+
+        # ---- Plot formatting ----
+        ax.set_aspect("equal", adjustable="box")
+        ax.set_xlim(self.x_min - 0.2, self.x_max + 0.2)
+        ax.set_ylim(self.y_min - 0.2, self.y_max + 0.2)
+        ax.set_title(f"Episode {self._episode_idx} | event={event} | steps={traj.shape[0]}")
+        ax.legend(loc="upper right")
+
+        out = self.traj_dir / f"ep_{self._episode_idx:06d}_{event}.png"
+        fig.tight_layout()
+        fig.savefig(out, dpi=150)
+        plt.close(fig)
+
+
 
     @staticmethod
     def parse_args():
@@ -479,7 +701,7 @@ class Go2MPCEnv(gym.Env):
         # imitation
         p.add_argument("--mse_weight", type=float, default=1.0)
         p.add_argument("--initial_beta", type=float, default=1.0)
-        p.add_argument("--end_iteration_number", type=int, default=200_000)
+        p.add_argument("--end_iteration_number", type=int, default=100_000)
 
         # env reward knobs
         p.add_argument("--w_dist", type=float, default=10.0)
@@ -506,7 +728,7 @@ class Go2MPCEnv(gym.Env):
         p.add_argument(
             "--reward_mode",
             type=str,
-            default="shaped",
+            default="frozenlake_cost",
             choices=["shaped", "frozenlake_cost"],
             help="Choose reward function: shaped (old) or frozenlake_cost (simple cost).",
         )
@@ -516,6 +738,16 @@ class Go2MPCEnv(gym.Env):
         p.add_argument("--goal_cost", type=float, default=0.0)
         p.add_argument("--crash_cost", type=float, default=200.0)
         p.add_argument("--action_cost", type=float, default=0.01)
+
+        # ----------------------------
+        # evaluation
+        # ----------------------------
+        p.add_argument("--mode", type=str, default="train", choices=["train", "eval"])
+        p.add_argument("--eval_algo", type=str, default="rl", choices=["rl", "reap"])
+        p.add_argument("--eval_episodes", type=int, default=20)
+        p.add_argument("--model_path", type=str, default="ppo_mpc_go2_sliding_mpc_style.zip")
+        p.add_argument("--deterministic", action="store_true")
+
 
 
 
@@ -589,6 +821,10 @@ class Go2MPCEnv(gym.Env):
             self.world.step(render=False)
 
         obs = self._get_obs()
+         # Start a new trajectory buffer
+        self._episode_idx += 1
+        self._traj_xy = [obs.copy()]
+
         self.prev_dist = float(np.linalg.norm(obs - self.target_pos))
         if self.use_safety_penalty:
             self.prev_dmin = self._min_obstacle_distance(obs)
@@ -614,6 +850,9 @@ class Go2MPCEnv(gym.Env):
 
         # Observation
         obs = self._get_obs()
+        # Record trajectory point
+        self._traj_xy.append(obs.copy())
+
 
         # ---- Reward & termination (new) ----
         self.step_count += 1
@@ -636,13 +875,21 @@ class Go2MPCEnv(gym.Env):
             info = {"event": "goal", "dist": float(dist)}
             if expert_u is not None:
                 info["Action MPC"] = expert_u
+            
+            self._save_episode_trajectory(event="goal")
             return obs, reward, terminated, truncated, info
 
 
 
 
         # 2) Crash: obstacles or boundaries => big negative reward
-        crash = self._out_of_bounds(obs) or self._hit_obstacle(obs)
+        hit_obs = self._hit_obstacle(obs)
+        hit_border, border_side = self._hit_border(obs)
+
+        # (Optional failsafe) if something weird happens and it escapes the box
+        out = self._out_of_bounds(obs)
+
+        crash = hit_obs or hit_border or out
         if crash:
             if self.reward_mode == "shaped":
                 reward = -self.crash_penalty
@@ -651,10 +898,28 @@ class Go2MPCEnv(gym.Env):
 
             terminated = True
             truncated = False
-            info = {"event": "crash", "dist": float(dist)}
+
+            # Signal what happened
+            if hit_obs:
+                event = "crash_obstacle"
+            elif hit_border:
+                event = "crash_border"
+            else:
+                event = "crash_oob"
+
+            info = {
+                "event": event,
+                "dist": float(dist),
+                "hit_obstacle": bool(hit_obs),
+                "hit_border": bool(hit_border),
+                "border_side": border_side,   # left/right/bottom/top or None
+            }
             if expert_u is not None:
                 info["Action MPC"] = expert_u
+            
+            self._save_episode_trajectory(event=event)
             return obs, reward, terminated, truncated, info
+
 
 
 
@@ -693,9 +958,108 @@ class Go2MPCEnv(gym.Env):
             info["progress"] = progress
         if expert_u is not None:
             info["Action MPC"] = expert_u
+
+        if truncated:
+            event = "timeout"
+            if self.reward_mode == "shaped":
+                reward = reward  # keep whatever you already computed
+            else:
+                reward = reward
+
+            info["event"] = event
+            self._save_episode_trajectory(event=event)
+            return obs, reward, False, True, info
+
         return obs, reward, terminated, truncated, info
 
 
+
+
+def run_evaluation(args, env0, log_root: pathlib.Path):
+    """
+    Runs evaluation episodes and relies on env0's built-in trajectory saver.
+    Saves PNGs into: log_root / eval_<algo>_<timestamp> / trajectories
+    """
+
+    eval_tag = f"eval_{args.eval_algo}_{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    traj_dir = log_root / eval_tag / "trajectories"
+
+    # Make sure trajectories are ON for evaluation
+    env0.save_trajectories = True
+    env0.traj_every = 1
+    env0.traj_dir = traj_dir
+
+    # IMPORTANT: avoid the env computing expert_u inside step() during eval
+    # (it's only for imitation labels, and it's expensive)
+    env0.planner = None
+
+    env = Monitor(env0)
+    env.reset(seed=args.seed)
+
+    # ----------------------------
+    # Choose evaluation controller
+    # ----------------------------
+    model = None
+    reap = None
+
+    if args.eval_algo == "rl":
+        # Load your trained model
+        # If PPO_MPC inherits SB3 BaseAlgorithm, this works:
+        model = PPO_MPC.load(args.model_path, env=env, device="cuda")
+        print(f">> [Eval] Loaded RL model from: {args.model_path}")
+    else:
+        reap = REAP_Planner()
+        print(">> [Eval] Using REAP controller")
+
+    # ----------------------------
+    # Rollouts
+    # ----------------------------
+    n_goal = 0
+    n_crash = 0
+    n_timeout = 0
+    ep_returns = []
+    ep_lengths = []
+
+    for ep in range(args.eval_episodes):
+        obs, info = env.reset()
+        done = False
+        ep_ret = 0.0
+        ep_len = 0
+
+        # For REAP: reset once per episode to start from a cold/warm state (your choice)
+        if reap is not None:
+            reap.reset()
+
+        while not done:
+            if model is not None:
+                action, _ = model.predict(obs, deterministic=args.deterministic)
+            else:
+                action = reap.get_action(obs)
+
+            obs, reward, terminated, truncated, info = env.step(action)
+            done = bool(terminated or truncated)
+
+            ep_ret += float(reward)
+            ep_len += 1
+
+        # env saved the PNG already (goal/crash/timeout)
+        event = info.get("event", "unknown")
+        if event == "goal":
+            n_goal += 1
+        elif event.startswith("crash"):
+            n_crash += 1
+        elif event == "timeout":
+            n_timeout += 1
+
+        ep_returns.append(ep_ret)
+        ep_lengths.append(ep_len)
+
+        print(f">> [Eval] ep={ep+1}/{args.eval_episodes} event={event} return={ep_ret:.2f} len={ep_len}")
+
+    print(">> [Eval] Done.")
+    print(f">> [Eval] success(goal)={n_goal}/{args.eval_episodes}  crash={n_crash}  timeout={n_timeout}")
+    print(f">> [Eval] avg_return={np.mean(ep_returns):.2f}  avg_len={np.mean(ep_lengths):.1f}")
+    print(">> [Eval] Trajectory PNGs saved in:", traj_dir)
 
 
 
@@ -719,6 +1083,12 @@ def main():
     log_root.mkdir(parents=True, exist_ok=True)
 
     env0 = Go2MPCEnv()
+
+    # ---------- EVAL MODE ----------
+    if args.mode == "eval":
+        run_evaluation(args, env0, log_root)
+        return
+
 
     # apply argparse settings to env (minimal: overwrite attributes)
     env0.w_dist = args.w_dist
@@ -768,6 +1138,11 @@ def main():
 
     run_name = Go2MPCEnv.build_run_name(args)
 
+    # Where to save episode trajectory PNGs
+    traj_dir = log_root / run_name / "trajectories"
+    env0.traj_dir = traj_dir
+    env0.save_trajectories = True
+    env0.traj_every = 1   # change to 5 or 10 if you want fewer plots
 
 
     print(">> [Main] Initialize REAP Brain...")

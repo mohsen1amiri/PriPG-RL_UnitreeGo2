@@ -12,4 +12,9 @@ slurm-*.out
 sbatch_frozenlake_many/
 tb_logs_frozenlake/
 Commands
+tb_logs
+
+
+
+
 
