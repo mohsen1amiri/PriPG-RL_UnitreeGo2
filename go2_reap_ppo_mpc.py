@@ -32,6 +32,8 @@ import argparse
 import random
 import numpy as np
 import torch as th
+import json
+import pandas as pd
 
 def set_global_seed(seed: int, seed_cuda: bool = True) -> None:
     random.seed(seed)
@@ -69,13 +71,17 @@ import sympy as sp
 from stable_baselines3.ppo.policies import MultiInputPolicy, MlpPolicy
 from Buffer_Custom import RolloutBuffer, DictRolloutBuffer
 from stable_baselines3.common.monitor import Monitor
+from stable_baselines3.common.callbacks import BaseCallback, CallbackList
 import argparse, json
 from datetime import datetime
+import csv
+from pathlib import Path
 
 import matplotlib
 matplotlib.use("Agg")  # headless save-to-file backend
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle, Rectangle
+
 
 
 
@@ -95,6 +101,198 @@ from isaacsim.core.api.objects import FixedCuboid
 
 
 
+class EpisodeEventStatsCallback(BaseCallback):
+    def __init__(self, window_episodes=100, verbose=0):
+        super().__init__(verbose)
+        self.window = window_episodes
+        self.reset_window()
+
+    def reset_window(self):
+        self.ep = 0
+        self.goal = 0
+        self.crash = 0
+        self.timeout = 0
+
+    def _on_step(self) -> bool:
+        infos = self.locals.get("infos", None)
+        dones = self.locals.get("dones", None)
+
+        # VecEnv case (usually SB3)
+        if infos is not None and dones is not None:
+            for info, done in zip(infos, dones):
+                if done:
+                    self._count(info)
+        else:
+            # Non-vec fallback (rare in SB3, but safe)
+            info = self.locals.get("info", {})
+            done = self.locals.get("done", False)
+            if done:
+                self._count(info)
+
+        return True
+
+    def _count(self, info: dict):
+        self.ep += 1
+        event = info.get("event", "")
+        if event == "goal":
+            self.goal += 1
+        elif str(event).startswith("crash"):
+            self.crash += 1
+        elif event == "timeout":
+            self.timeout += 1
+
+        if self.ep >= self.window:
+            self.logger.record("rollout/success_rate", self.goal / self.ep)
+            self.logger.record("rollout/crash_rate", self.crash / self.ep)
+            self.logger.record("rollout/timeout_rate", self.timeout / self.ep)
+            self.reset_window()
+    
+    def _on_training_end(self) -> None:
+        # Log whatever is left in the window at the end
+        if self.ep > 0:
+            self.logger.record("rollout/success_rate", self.goal / self.ep)
+            self.logger.record("rollout/crash_rate", self.crash / self.ep)
+            self.logger.record("rollout/timeout_rate", self.timeout / self.ep)
+
+
+
+
+
+class PeriodicEvalCallback(BaseCallback):
+    def __init__(
+        self,
+        eval_env,
+        eval_freq: int,
+        n_eval_episodes: int,
+        deterministic: bool = True,
+        save_trajectories: bool = False,
+        traj_every: int = 0,
+        verbose: int = 0,
+    ):
+        super().__init__(verbose)
+        self.eval_env = eval_env
+        self.eval_freq = int(eval_freq)
+        self.n_eval_episodes = int(n_eval_episodes)
+        self.deterministic = bool(deterministic)
+
+        self.save_trajectories = bool(save_trajectories)
+        self.traj_every = int(traj_every)
+
+        self.last_eval_step = 0
+        self.out_dir = None
+        self.csv_path = None
+        self.traj_root = None
+
+    def _on_training_start(self) -> None:
+        # SB3 sets logger.dir when training starts
+        run_dir = Path(self.model.logger.dir)
+        self.out_dir = run_dir / "eval_during_train"
+        self.out_dir.mkdir(parents=True, exist_ok=True)
+
+        self.traj_root = self.out_dir / "trajectories"
+        self.traj_root.mkdir(parents=True, exist_ok=True)
+
+        self.csv_path = self.out_dir / "eval_history.csv"
+        if not self.csv_path.exists():
+            with open(self.csv_path, "w", newline="") as f:
+                w = csv.writer(f)
+                w.writerow(
+                    ["timesteps", "success_rate", "crash_rate", "timeout_rate", "avg_return", "avg_len"]
+                )
+
+    def _on_step(self) -> bool:
+        if self.eval_freq <= 0:
+            return True
+
+        if (self.num_timesteps - self.last_eval_step) < self.eval_freq:
+            return True
+
+        self.last_eval_step = self.num_timesteps
+        stats = self._run_eval()
+
+        # ---- TensorBoard logging ----
+        self.logger.record("eval/success_rate", stats["success_rate"])
+        self.logger.record("eval/crash_rate", stats["crash_rate"])
+        self.logger.record("eval/timeout_rate", stats["timeout_rate"])
+        self.logger.record("eval/avg_return", stats["avg_return"])
+        self.logger.record("eval/avg_len", stats["avg_len"])
+        self.logger.dump(self.num_timesteps)
+
+        # ---- CSV append ----
+        with open(self.csv_path, "a", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(
+                [self.num_timesteps,
+                 stats["success_rate"], stats["crash_rate"], stats["timeout_rate"],
+                 stats["avg_return"], stats["avg_len"]]
+            )
+
+        # ---- JSON snapshot ----
+        with open(self.out_dir / f"eval_{self.num_timesteps}.json", "w") as f:
+            json.dump(stats, f, indent=2)
+
+        if self.verbose:
+            print(f">> [EvalDuringTrain] t={self.num_timesteps} stats={stats}")
+
+        return True
+
+    def _run_eval(self) -> dict:
+        # If eval_env is a Monitor wrapper, unwrap one level to reach your Go2MPCEnv
+        base_env = self.eval_env.env if hasattr(self.eval_env, "env") else self.eval_env
+
+        # Configure trajectory saving for THIS eval
+        if self.save_trajectories and self.traj_every > 0:
+            base_env.save_trajectories = True
+            base_env.traj_every = self.traj_every
+            base_env.traj_dir = self.traj_root / f"t_{self.num_timesteps:010d}"
+        else:
+            base_env.save_trajectories = False
+
+        n_goal = n_crash = n_timeout = 0
+        returns = []
+        lengths = []
+
+        for _ in range(self.n_eval_episodes):
+            obs, info = self.eval_env.reset()
+            done = False
+            ep_ret = 0.0
+            ep_len = 0
+
+            while not done:
+                action, _ = self.model.predict(obs, deterministic=self.deterministic)
+                obs, reward, terminated, truncated, info = self.eval_env.step(action)
+                done = bool(terminated or truncated)
+                ep_ret += float(reward)
+                ep_len += 1
+
+            event = info.get("event", "unknown")
+            if event == "goal":
+                n_goal += 1
+            elif str(event).startswith("crash"):
+                n_crash += 1
+            elif event == "timeout":
+                n_timeout += 1
+
+            returns.append(ep_ret)
+            lengths.append(ep_len)
+
+        denom = float(self.n_eval_episodes)
+        return {
+            "timesteps": int(self.num_timesteps),
+            "n_eval_episodes": int(self.n_eval_episodes),
+            "n_goal": int(n_goal),
+            "n_crash": int(n_crash),
+            "n_timeout": int(n_timeout),
+            "success_rate": n_goal / denom,
+            "crash_rate": n_crash / denom,
+            "timeout_rate": n_timeout / denom,
+            "avg_return": float(np.mean(returns)) if returns else 0.0,
+            "avg_len": float(np.mean(lengths)) if lengths else 0.0,
+        }
+
+
+
+
 # ==============================================================================
 # SECTION 2: THE REAP PLANNER (The Brain)
 # ==============================================================================
@@ -103,11 +301,14 @@ class REAP_Planner:
         print(">> [REAP] Initializing Symbolic Math (this takes a moment)...")
 
         # --- PARAMETERS ---
-        self.N_HORIZON = 2
+        # self.N_HORIZON = 2
+        self.N_HORIZON = 4
         self.DT_SIM = 0.01
         self.MAX_VEL = 2.0
         self.BARRIER_BETA = 100.0
         self.ROBOT_RADIUS = 0.1
+        self.SIM_T_END = 0.1
+        self.N_updates = int(self.SIM_T_END / self.DT_SIM)
 
         # Weights
         self.Q_mat = np.diag([10.0, 10.0])
@@ -190,7 +391,7 @@ class REAP_Planner:
         Takes current Robot Position [x, y]
         Returns Optimal Velocity [vx, vy]
         """
-        for _ in range(5):
+        for _ in range(self.N_updates):
             grad_u = self._compute_grad_u(self.opt_vars, current_pos, self.hat_lambda)
             grad_l = self._compute_grad_lambda(self.opt_vars, current_pos)
 
@@ -629,8 +830,14 @@ class Go2MPCEnv(gym.Env):
         """
         if not self.save_trajectories:
             return
-        if self._episode_idx % self.traj_every != 0:
+        # traj_every <= 0 disables plots
+        if self.traj_every <= 0:
             return
+
+        # Save episodes: 1, 1+N, 1+2N, ...
+        if ((self._episode_idx - 1) % self.traj_every) != 0:
+            return
+
         if len(self._traj_xy) < 2:
             return
 
@@ -668,9 +875,11 @@ class Go2MPCEnv(gym.Env):
         )
 
         # ---- Start / Goal / End ----
-        ax.scatter(traj[0, 0], traj[0, 1], marker="*", s=140, label="start")
-        ax.scatter(self.target_pos[0], self.target_pos[1], marker="o", s=90, label="goal")
-        ax.scatter(traj[-1, 0], traj[-1, 1], marker="x", s=90, label="end")
+        ax.scatter(traj[0, 0], traj[0, 1], marker="*", s=10, label="start") 
+        ax.scatter(self.target_pos[0], self.target_pos[1], marker="o", s=10, label="goal")
+        ax.scatter(traj[-1, 0], traj[-1, 1], marker="x", s=10, label="end")
+
+
 
         # ---- Plot formatting ----
         ax.set_aspect("equal", adjustable="box")
@@ -747,6 +956,24 @@ class Go2MPCEnv(gym.Env):
         p.add_argument("--eval_episodes", type=int, default=20)
         p.add_argument("--model_path", type=str, default="ppo_mpc_go2_sliding_mpc_style.zip")
         p.add_argument("--deterministic", action="store_true")
+        # during-training evaluation
+        p.add_argument("--eval_freq", type=int, default=0,
+                    help="Run eval every N training timesteps (0 = disable)")
+        p.add_argument("--eval_n_episodes", type=int, default=20,
+                    help="How many episodes per eval during training")
+
+
+
+
+        # ----------------------------
+        # trajectory plots
+        # ----------------------------
+        p.add_argument("--traj_every_train", type=int, default=10,
+                    help="Save trajectory PNG every N training episodes (0 disables).")
+        p.add_argument("--traj_every_eval", type=int, default=10,
+                    help="Save trajectory PNG every N eval episodes (0 disables).")
+        p.add_argument("--save_eval_traj_during_train", action="store_true",
+                    help="If set, periodic eval during training also saves trajectory PNGs.")
 
 
 
@@ -873,6 +1100,7 @@ class Go2MPCEnv(gym.Env):
             terminated = True
             truncated = False
             info = {"event": "goal", "dist": float(dist)}
+            info["is_success"] = 1.0
             if expert_u is not None:
                 info["Action MPC"] = expert_u
             
@@ -914,6 +1142,7 @@ class Go2MPCEnv(gym.Env):
                 "hit_border": bool(hit_border),
                 "border_side": border_side,   # left/right/bottom/top or None
             }
+            info["is_success"] = 0.0
             if expert_u is not None:
                 info["Action MPC"] = expert_u
             
@@ -967,6 +1196,7 @@ class Go2MPCEnv(gym.Env):
                 reward = reward
 
             info["event"] = event
+            info["is_success"] = 0.0 
             self._save_episode_trajectory(event=event)
             return obs, reward, False, True, info
 
@@ -985,9 +1215,11 @@ def run_evaluation(args, env0, log_root: pathlib.Path):
     traj_dir = log_root / eval_tag / "trajectories"
 
     # Make sure trajectories are ON for evaluation
-    env0.save_trajectories = True
-    env0.traj_every = 1
+    # Make sure trajectories follow CLI settings for evaluation
+    env0.save_trajectories = (args.traj_every_eval > 0)
+    env0.traj_every = args.traj_every_eval
     env0.traj_dir = traj_dir
+
 
     # IMPORTANT: avoid the env computing expert_u inside step() during eval
     # (it's only for imitation labels, and it's expensive)
@@ -1019,6 +1251,8 @@ def run_evaluation(args, env0, log_root: pathlib.Path):
     n_timeout = 0
     ep_returns = []
     ep_lengths = []
+    events = []
+    successes = []
 
     for ep in range(args.eval_episodes):
         obs, info = env.reset()
@@ -1044,6 +1278,8 @@ def run_evaluation(args, env0, log_root: pathlib.Path):
 
         # env saved the PNG already (goal/crash/timeout)
         event = info.get("event", "unknown")
+        events.append(event)
+        successes.append(float(info.get("is_success", 0.0)))
         if event == "goal":
             n_goal += 1
         elif event.startswith("crash"):
@@ -1060,6 +1296,41 @@ def run_evaluation(args, env0, log_root: pathlib.Path):
     print(f">> [Eval] success(goal)={n_goal}/{args.eval_episodes}  crash={n_crash}  timeout={n_timeout}")
     print(f">> [Eval] avg_return={np.mean(ep_returns):.2f}  avg_len={np.mean(ep_lengths):.1f}")
     print(">> [Eval] Trajectory PNGs saved in:", traj_dir)
+
+
+
+    # ... after the evaluation loop finishes
+
+    summary = {
+        "eval_algo": args.eval_algo,
+        "eval_episodes": args.eval_episodes,
+        "n_goal": n_goal,
+        "n_crash": n_crash,
+        "n_timeout": n_timeout,
+        "success_rate": n_goal / float(args.eval_episodes),
+        "crash_rate": n_crash / float(args.eval_episodes),
+        "timeout_rate": n_timeout / float(args.eval_episodes),
+        "avg_return": float(np.mean(ep_returns)),
+        "avg_len": float(np.mean(ep_lengths)),
+    }
+
+    (out_dir := (log_root / eval_tag)).mkdir(parents=True, exist_ok=True)
+    with open(out_dir / "summary.json", "w") as f:
+        json.dump(summary, f, indent=2)
+
+    df = pd.DataFrame({
+        "episode": np.arange(1, args.eval_episodes + 1),
+        "event": events,
+        "is_success": successes,
+        "return": ep_returns,
+        "length": ep_lengths,
+    })
+
+
+    df.to_csv(out_dir / "episodes.csv", index=False)
+
+    print(">> [Eval] Saved:", out_dir / "summary.json", "and", out_dir / "episodes.csv")
+
 
 
 
@@ -1139,10 +1410,12 @@ def main():
     run_name = Go2MPCEnv.build_run_name(args)
 
     # Where to save episode trajectory PNGs
+    # Where to save episode trajectory PNGs (training)
     traj_dir = log_root / run_name / "trajectories"
     env0.traj_dir = traj_dir
-    env0.save_trajectories = True
-    env0.traj_every = 1   # change to 5 or 10 if you want fewer plots
+    env0.save_trajectories = (args.traj_every_train > 0)
+    env0.traj_every = args.traj_every_train
+
 
 
     print(">> [Main] Initialize REAP Brain...")
@@ -1154,6 +1427,44 @@ def main():
     env.reset(seed=args.seed)
     env.action_space.seed(args.seed)
     env.observation_space.seed(args.seed)
+
+
+    # ---- Evaluation env (separate from training env!) ----
+    eval_env0 = Go2MPCEnv()
+    eval_env0.planner = None              # don't compute expert actions during eval
+    eval_env0.save_trajectories = False   # avoid tons of PNGs during periodic eval
+    eval_env0.traj_every = args.traj_every_eval
+    # traj_dir will be set by PeriodicEvalCallback per-eval timestep folder
+
+    
+
+    # after eval_env0 = Go2MPCEnv()
+    eval_env0.w_dist = args.w_dist
+    eval_env0.w_step = args.w_step
+    eval_env0.alive_cost = args.alive_cost
+    eval_env0.goal_reward = args.goal_reward
+    eval_env0.crash_penalty = args.crash_penalty
+    eval_env0.w_progress = args.w_progress
+    eval_env0.w_time = args.w_time
+    eval_env0.w_u = args.w_u
+    eval_env0.safe_margin = args.safe_margin
+    eval_env0.w_safe = args.w_safe
+    eval_env0.use_safety_penalty = args.use_safety_penalty
+
+    eval_env0.reward_mode = args.reward_mode
+    eval_env0.step_cost = args.step_cost
+    eval_env0.goal_cost = args.goal_cost
+    eval_env0.crash_cost = args.crash_cost
+    eval_env0.action_cost = args.action_cost
+
+    if getattr(args, "always_negative_reward", False):
+        eval_env0._configure_always_negative_reward(eps=args.neg_eps)
+
+
+    eval_env = Monitor(eval_env0)
+    eval_env.reset(seed=args.seed + 999)
+
+
 
 
 
@@ -1199,7 +1510,27 @@ def main():
 
 
     print(">> [Main] Starting PPO_MPC training...")
-    model.learn(total_timesteps=args.total_timesteps, tb_log_name=run_name)
+    train_stats_cb = EpisodeEventStatsCallback(window_episodes=100)
+
+    callbacks = [train_stats_cb]
+
+    if args.eval_freq > 0:
+        eval_cb = PeriodicEvalCallback(
+            eval_env=eval_env,
+            eval_freq=args.eval_freq,
+            n_eval_episodes=args.eval_n_episodes,
+            deterministic=args.deterministic,
+            save_trajectories=args.save_eval_traj_during_train,
+            traj_every=args.traj_every_eval,
+            verbose=1,
+        )
+
+        callbacks.append(eval_cb)
+
+    callback = CallbackList(callbacks)
+    model.learn(total_timesteps=args.total_timesteps, tb_log_name=run_name, callback=callback)
+
+
 
     # Save config next to the actual TB run directory
     run_dir = pathlib.Path(model.logger.dir)

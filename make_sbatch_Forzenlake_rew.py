@@ -18,10 +18,34 @@ TIME = "7-00:00:00"
 SOURCE_LINE = "source /cephyr/users/mohsena/Alvis/portal/vscode/Paper_CDC.sh"
 
 SEEDS = [0, 1, 2, 3, 4]
-RUNS_PER_FILE = 10  # 30 = 6 configs × 5 seeds
+RUNS_PER_FILE = 10  # configs_per_file * len(SEEDS)
 MAX_PARALLEL = 10   # run 10 at once on the same GPU
 
+# -----------------------------
+# NEW (matches updated go2_reap_ppo_mpc.py): trajectory saving knobs
+# -----------------------------
+TRAJ_EVERY_TRAIN = 10          # 0 disables train trajectory PNGs
+TRAJ_EVERY_EVAL = 10           # 0 disables eval trajectory PNGs (for eval mode + periodic eval)
+SAVE_EVAL_TRAJ_DURING_TRAIN = True  # if True, periodic eval during training will also save PNGs
+
+# -----------------------------
+# During-training evaluation knobs
+# -----------------------------
+EVAL_FREQ = 100_000        # 0 disables periodic eval during training
+EVAL_N_EPISODES = 20       # number of episodes per periodic eval
+EVAL_DETERMINISTIC = True  # adds --deterministic
+
+# -----------------------------
+# Safety penalty handling (IMPORTANT)
+# In your env __init__ you set use_safety_penalty=True,
+# BUT main() overwrites it with args.use_safety_penalty (default False)
+# unless you pass the flag.
+# -----------------------------
+USE_SAFETY_PENALTY = False  # set False if you explicitly want safety penalty OFF
+
+# -----------------------------
 # Fixed FrozenLake-cost reward params (keep constant)
+# -----------------------------
 REWARD_ARGS = [
     "--reward_mode", "frozenlake_cost",
     "--step_cost", "1.0",
@@ -30,7 +54,9 @@ REWARD_ARGS = [
     "--action_cost", "0.00",
 ]
 
+# -----------------------------
 # Other fixed knobs
+# -----------------------------
 FIXED_ARGS = [
     "--gamma", "0.98",
     "--total_timesteps", "5_000_000",
@@ -41,7 +67,27 @@ FIXED_ARGS = [
     "--safe_margin", "0.15",
     "--w_safe", "5",
     "--log_root", "tb_logs_frozenlake",
+
+    # NEW: trajectory flags in updated training script
+    "--traj_every_train", str(TRAJ_EVERY_TRAIN),
+    "--traj_every_eval", str(TRAJ_EVERY_EVAL),
 ]
+
+if USE_SAFETY_PENALTY:
+    FIXED_ARGS.append("--use_safety_penalty")
+
+if SAVE_EVAL_TRAJ_DURING_TRAIN:
+    FIXED_ARGS.append("--save_eval_traj_during_train")
+
+# -----------------------------
+# Eval args (only used if EVAL_FREQ > 0)
+# -----------------------------
+EVAL_ARGS = [
+    "--eval_freq", str(EVAL_FREQ),
+    "--eval_n_episodes", str(EVAL_N_EPISODES),
+]
+if EVAL_DETERMINISTIC:
+    EVAL_ARGS.append("--deterministic")
 
 # Grid
 GRID = {
@@ -65,7 +111,7 @@ def main():
         raise ValueError(
             f"RUNS_PER_FILE={RUNS_PER_FILE} must be divisible by number of seeds={len(SEEDS)}"
         )
-    configs_per_file = RUNS_PER_FILE // len(SEEDS)  # e.g., 30/5=6 configs
+    configs_per_file = RUNS_PER_FILE // len(SEEDS)
 
     keys = list(GRID.keys())
     all_cfgs = [dict(zip(keys, values)) for values in product(*[GRID[k] for k in keys])]
@@ -79,6 +125,9 @@ def main():
     print(f"Total runs: {len(all_cfgs) * len(SEEDS)}")
     print(f"SBATCH files: {len(chunks)}")
     print(f"Parallelism per sbatch: {MAX_PARALLEL}")
+    print(f"Eval during train: eval_freq={EVAL_FREQ} eval_n_episodes={EVAL_N_EPISODES} det={EVAL_DETERMINISTIC}")
+    print(f"Traj: train_every={TRAJ_EVERY_TRAIN} eval_every={TRAJ_EVERY_EVAL} save_eval_traj_during_train={SAVE_EVAL_TRAJ_DURING_TRAIN}")
+    print(f"Safety penalty enabled: {USE_SAFETY_PENALTY}")
 
     for j, cfg_chunk in enumerate(chunks):
         jobname = f"flk_{j:04d}"
@@ -101,7 +150,7 @@ def main():
             f.write('echo "Running in: $(pwd)"\n')
             f.write(f"MAX_PARALLEL={MAX_PARALLEL}\n\n")
 
-            # Robust parallel runner: track PIDs, wait each, fail fast if any fails
+            # Robust parallel runner
             f.write("pids=()\n")
             f.write("run_bg() {\n")
             f.write("  \"$@\" &\n")
@@ -128,14 +177,22 @@ def main():
                         "--end_iteration_number", cfg["end_iteration_number"],
                     ] + REWARD_ARGS + FIXED_ARGS
 
+                    if EVAL_FREQ > 0:
+                        cmd += EVAL_ARGS
+                    else:
+                        cmd += ["--eval_freq", "0"]
+
                     f.write("\n")
                     f.write(
-                        f'echo "RUN: seed={seed} lr={cfg["lr"]} n_steps={cfg["n_steps"]} bs={cfg["batch_size"]} '
-                        f'L={cfg["net_layers"]} H={cfg["net_nodes"]} end={cfg["end_iteration_number"]}"\n'
+                        'echo "RUN: '
+                        f'seed={seed} lr={cfg["lr"]} n_steps={cfg["n_steps"]} bs={cfg["batch_size"]} '
+                        f'L={cfg["net_layers"]} H={cfg["net_nodes"]} end={cfg["end_iteration_number"]} '
+                        f'eval_freq={EVAL_FREQ} eval_eps={EVAL_N_EPISODES} det={int(EVAL_DETERMINISTIC)} '
+                        f'traj_train={TRAJ_EVERY_TRAIN} traj_eval={TRAJ_EVERY_EVAL} save_eval_traj={int(SAVE_EVAL_TRAJ_DURING_TRAIN)} '
+                        f'safety={int(USE_SAFETY_PENALTY)}"\n'
                     )
                     f.write("run_bg " + " ".join(cmd) + "\n")
 
-            # Final drain
             f.write("\necho \">> final wait\"\n")
             f.write("for pid in \"${pids[@]}\"; do wait \"$pid\" || exit 1; done\n")
             f.write("echo \"All runs finished.\"\n")
@@ -146,12 +203,12 @@ def main():
     with open(submit_path, "w") as f:
         f.write("#!/usr/bin/env bash\n")
         f.write("set -e\n")
-        f.write('shopt -s nullglob\n')
-        f.write('for s in *; do\n')
-        f.write('  [[ "$s" =~ ^[0-9]+$ ]] || continue\n')
-        f.write('  echo "Submitting $s"\n')
-        f.write('  sbatch "$s"\n')
-        f.write('done\n')
+        f.write("shopt -s nullglob\n")
+        f.write("for s in *; do\n")
+        f.write("  [[ \"$s\" =~ ^[0-9]+$ ]] || continue\n")
+        f.write("  echo \"Submitting $s\"\n")
+        f.write("  sbatch \"$s\"\n")
+        f.write("done\n")
     os.chmod(submit_path, 0o755)
 
     print(f"\nDone.\nCreated sbatch files in: {OUTDIR}\nSubmit with:\n  cd {OUTDIR} && ./submit_all.sh\n")
