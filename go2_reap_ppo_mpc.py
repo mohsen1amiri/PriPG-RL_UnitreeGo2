@@ -102,58 +102,207 @@ from isaacsim.core.api.objects import FixedCuboid
 
 
 class EpisodeEventStatsCallback(BaseCallback):
+    """
+    Logs:
+      - success_rate: episodes that ended with goal / episodes
+      - timeout_rate: episodes that ended with timeout / episodes
+      - crash_end_rate: episodes that ended by crash / episodes
+      - crash_any_rate: episodes that had >=1 crash event at any time / episodes
+    Note: In continue_on_crash mode, crash_any_rate can be > crash_end_rate,
+          and crash_any_rate + success_rate can exceed 1 (because an episode can crash and later reach goal).
+    """
     def __init__(self, window_episodes=100, verbose=0):
         super().__init__(verbose)
-        self.window = window_episodes
+        self.window = int(window_episodes)
         self.reset_window()
+
+        # Per-env episode state (initialized on first step)
+        self._had_crash = None
 
     def reset_window(self):
         self.ep = 0
         self.goal = 0
-        self.crash = 0
         self.timeout = 0
+        self.crash_end = 0       # ended by crash
+        self.crash_any = 0       # had at least one crash (even if continued)
+
+    def _ensure_state(self, n_envs: int):
+        if self._had_crash is None or len(self._had_crash) != n_envs:
+            self._had_crash = [False] * n_envs
 
     def _on_step(self) -> bool:
         infos = self.locals.get("infos", None)
         dones = self.locals.get("dones", None)
 
-        # VecEnv case (usually SB3)
+        # SB3 typical case: VecEnv
         if infos is not None and dones is not None:
-            for info, done in zip(infos, dones):
+            self._ensure_state(len(infos))
+
+            for i, (info, done) in enumerate(zip(infos, dones)):
+                event = str(info.get("event", ""))
+
+                # Count crash occurrence even if episode doesn't end
+                if event.startswith("crash"):
+                    self._had_crash[i] = True
+
+                # Episode ended -> finalize episode-level stats
                 if done:
-                    self._count(info)
+                    self.ep += 1
+
+                    end_event = event
+                    if end_event == "goal":
+                        self.goal += 1
+                    elif end_event == "timeout":
+                        self.timeout += 1
+                    elif end_event.startswith("crash"):
+                        self.crash_end += 1
+
+                    # Count "crashed at least once this episode"
+                    if self._had_crash[i]:
+                        self.crash_any += 1
+
+                    # Reset per-episode flag for this env
+                    self._had_crash[i] = False
+
+                    if self.ep >= self.window:
+                        self._log_and_reset()
+
         else:
-            # Non-vec fallback (rare in SB3, but safe)
-            info = self.locals.get("info", {})
-            done = self.locals.get("done", False)
+            # Non-vec fallback (rare in SB3)
+            info = self.locals.get("info", {}) or {}
+            done = bool(self.locals.get("done", False))
+            event = str(info.get("event", ""))
+
+            # Track crash even when not done
+            if event.startswith("crash"):
+                if self._had_crash is None:
+                    self._had_crash = [False]
+                self._had_crash[0] = True
+
             if done:
-                self._count(info)
+                self.ep += 1
+                if event == "goal":
+                    self.goal += 1
+                elif event == "timeout":
+                    self.timeout += 1
+                elif event.startswith("crash"):
+                    self.crash_end += 1
+
+                if self._had_crash and self._had_crash[0]:
+                    self.crash_any += 1
+                self._had_crash[0] = False
+
+                if self.ep >= self.window:
+                    self._log_and_reset()
 
         return True
 
-    def _count(self, info: dict):
-        self.ep += 1
-        event = info.get("event", "")
-        if event == "goal":
-            self.goal += 1
-        elif str(event).startswith("crash"):
-            self.crash += 1
-        elif event == "timeout":
-            self.timeout += 1
+    def _log_and_reset(self):
+        denom = max(1, self.ep)
+        self.logger.record("rollout/success_rate", self.goal / denom)
+        self.logger.record("rollout/timeout_rate", self.timeout / denom)
+        self.logger.record("rollout/crash_end_rate", self.crash_end / denom)
+        self.logger.record("rollout/crash_any_rate", self.crash_any / denom)
+        self.reset_window()
 
-        if self.ep >= self.window:
-            self.logger.record("rollout/success_rate", self.goal / self.ep)
-            self.logger.record("rollout/crash_rate", self.crash / self.ep)
-            self.logger.record("rollout/timeout_rate", self.timeout / self.ep)
-            self.reset_window()
-    
     def _on_training_end(self) -> None:
-        # Log whatever is left in the window at the end
         if self.ep > 0:
-            self.logger.record("rollout/success_rate", self.goal / self.ep)
-            self.logger.record("rollout/crash_rate", self.crash / self.ep)
-            self.logger.record("rollout/timeout_rate", self.timeout / self.ep)
+            denom = max(1, self.ep)
+            self.logger.record("rollout/success_rate", self.goal / denom)
+            self.logger.record("rollout/timeout_rate", self.timeout / denom)
+            self.logger.record("rollout/crash_end_rate", self.crash_end / denom)
+            self.logger.record("rollout/crash_any_rate", self.crash_any / denom)
+            self.logger.dump(self.num_timesteps)
 
+
+
+class DisableExpertWhenImitationEndsCallback(BaseCallback):
+    """
+    Turns off env.collect_expert and env.planner when:
+      - timesteps >= end_iteration_number
+      OR
+      - model beta <= beta_eps   (if beta exists on the model)
+    """
+    def __init__(self, end_timesteps: int, beta_eps: float = 1e-12, verbose: int = 1):
+        super().__init__(verbose)
+        self.end_timesteps = int(end_timesteps)
+        self.beta_eps = float(beta_eps)
+        self._disabled = False
+
+    def _get_model_beta(self):
+        """
+        Try common attribute names.
+        Return None if PPO_MPC does not expose beta publicly.
+        """
+        candidates = [
+            "beta", "Beta",
+            "current_beta", "Current_Beta",
+            "beta_t", "Beta_t",
+            "_beta", "_current_beta",
+        ]
+        for name in candidates:
+            if hasattr(self.model, name):
+                try:
+                    return float(getattr(self.model, name))
+                except Exception:
+                    pass
+        return None
+
+    def _disable_expert_in_env(self):
+        """
+        SB3 usually wraps your env in a VecEnv + Monitor.
+        We unwrap aggressively and set:
+          collect_expert = False
+          planner = None
+        """
+        env = self.training_env
+
+        # VecEnv case
+        if hasattr(env, "envs"):
+            env_list = env.envs
+        else:
+            env_list = [env]
+
+        for e in env_list:
+            base = e
+            # unwrap Monitor/env wrappers a few times
+            for _ in range(10):
+                if hasattr(base, "env"):
+                    base = base.env
+                    continue
+                if hasattr(base, "unwrapped"):
+                    base = base.unwrapped
+                break
+
+            if hasattr(base, "collect_expert"):
+                base.collect_expert = False
+            if hasattr(base, "planner"):
+                base.planner = None
+
+    def _on_step(self) -> bool:
+        if self._disabled:
+            return True
+
+        t = int(self.num_timesteps)
+        beta = self._get_model_beta()
+
+        should_disable = False
+
+        # condition (1): timesteps reached
+        if t >= self.end_timesteps:
+            should_disable = True
+
+        # condition (2): beta reached ~0 (only if beta is visible)
+        if (beta is not None) and (beta <= self.beta_eps):
+            should_disable = True
+
+        if should_disable:
+            self._disable_expert_in_env()
+            self._disabled = True
+            if self.verbose:
+                print(f">> [Callback] Disabled expert labels at t={t}, beta={beta}")
+
+        return True
 
 
 
@@ -258,20 +407,31 @@ class PeriodicEvalCallback(BaseCallback):
             ep_ret = 0.0
             ep_len = 0
 
+            had_crash = False  # NEW: track crashes anywhere in the episode
+
             while not done:
                 action, _ = self.model.predict(obs, deterministic=self.deterministic)
                 obs, reward, terminated, truncated, info = self.eval_env.step(action)
+
+                ev = str(info.get("event", ""))
+                if ev.startswith("crash"):
+                    had_crash = True
+
                 done = bool(terminated or truncated)
                 ep_ret += float(reward)
                 ep_len += 1
 
-            event = info.get("event", "unknown")
-            if event == "goal":
+            end_event = str(info.get("event", "unknown"))
+            if end_event == "goal":
                 n_goal += 1
-            elif str(event).startswith("crash"):
-                n_crash += 1
-            elif event == "timeout":
+            elif end_event == "timeout":
                 n_timeout += 1
+
+            # NEW: crash count = crash-any (works with continue_on_crash)
+            if had_crash:
+                n_crash += 1
+
+
 
             returns.append(ep_ret)
             lengths.append(ep_len)
@@ -391,26 +551,25 @@ class REAP_Planner:
         Takes current Robot Position [x, y]
         Returns Optimal Velocity [vx, vy]
         """
-        for _ in range(self.N_updates):
-            grad_u = self._compute_grad_u(self.opt_vars, current_pos, self.hat_lambda)
-            grad_l = self._compute_grad_lambda(self.opt_vars, current_pos)
+        grad_u = self._compute_grad_u(self.opt_vars, current_pos, self.hat_lambda)
+        grad_l = self._compute_grad_lambda(self.opt_vars, current_pos)
 
-            # Phi Projection
-            phi_val = np.zeros_like(self.hat_lambda)
-            for i in range(len(self.hat_lambda)):
-                if self.hat_lambda[i] > 1e-10 or (self.hat_lambda[i] <= 1e-10 and grad_l[i] >= 0):
-                    phi_val[i] = 0
-                else:
-                    phi_val[i] = -grad_l[i]
+        # Phi Projection
+        phi_val = np.zeros_like(self.hat_lambda)
+        for i in range(len(self.hat_lambda)):
+            if self.hat_lambda[i] > 1e-10 or (self.hat_lambda[i] <= 1e-10 and grad_l[i] >= 0):
+                phi_val[i] = 0
+            else:
+                phi_val[i] = -grad_l[i]
 
-            checkpoint = grad_l + phi_val
-            Sigma = 0.5
+        checkpoint = grad_l + phi_val
+        Sigma = 0.5
 
-            # Update Primal (Control) and Dual (Lambda)
-            self.opt_vars = self.opt_vars - Sigma * grad_u
-            self.hat_lambda = self.hat_lambda + Sigma * checkpoint
-            self.hat_lambda = np.maximum(self.hat_lambda, 0)  # Project >= 0
-            self.opt_vars = np.clip(self.opt_vars, -self.MAX_VEL, self.MAX_VEL)
+        # Update Primal (Control) and Dual (Lambda)
+        self.opt_vars = self.opt_vars - Sigma * grad_u
+        self.hat_lambda = self.hat_lambda + Sigma * checkpoint
+        self.hat_lambda = np.maximum(self.hat_lambda, 0)  # Project >= 0
+        self.opt_vars = np.clip(self.opt_vars, -self.MAX_VEL, self.MAX_VEL)
 
         # Extract first action (Model Predictive Control)
         u_applied = self.opt_vars[:2].copy()
@@ -498,8 +657,24 @@ class Go2MPCEnv(gym.Env):
     def __init__(self):
         super().__init__()
 
+        # --- Simulation timestep used by BOTH the env and (ideally) the planner ---
+        self.DT_SIM = 0.01
+
+
         print(">> [Env] Creating World and loading Go2...")
+        # Create world with desired dt (API may vary slightly across Isaac versions)
         self.world = World(backend="numpy")
+
+        # # Try to force Isaac physics dt = DT_SIM
+        # try:
+        #     self.world.set_simulation_dt(physics_dt=self.DT_SIM, rendering_dt=self.DT_SIM)
+        # except Exception:
+        #     try:
+        #         phys = self.world.get_physics_context()
+        #         phys.set_time_step(self.DT_SIM)
+        #     except Exception:
+        #         print(">> [WARN] Could not set Isaac physics dt. Using Isaac default dt.")
+
         self.world.scene.add_default_ground_plane()
 
         assets_root = get_assets_root_path()
@@ -513,6 +688,8 @@ class Go2MPCEnv(gym.Env):
 
         # Expert planner (set from main). If None, no expert labels are produced.
         self.planner = None
+        self.collect_expert = False   # ONLY True during imitation label collection
+
 
 
         # Reset to load physics handles
@@ -704,12 +881,60 @@ class Go2MPCEnv(gym.Env):
         self._traj_xy = []                     # list of (x,y) during episode
 
 
+        # ----------------------------
+        # Random start options
+        # ----------------------------
+        self.random_start = False
+        self.start_clearance = 0.25
+        self.start_border_clearance = 0.15
+        self.start_max_tries = 200
+
+        # ----------------------------
+        # Crash handling option
+        # ----------------------------
+        self.terminate_on_crash = True  # default old behavior
+
     
 
 
 
     # ------------- Helpers -------------
 
+
+    def _is_valid_start(self, xy: np.ndarray) -> bool:
+        x, y = float(xy[0]), float(xy[1])
+
+        # Stay away from borders
+        m = float(self.robot_radius) + float(self.start_border_clearance)
+        if not (self.x_min + m <= x <= self.x_max - m):
+            return False
+        if not (self.y_min + m <= y <= self.y_max - m):
+            return False
+
+        # Stay away from obstacles
+        p = np.array([x, y], dtype=np.float32)
+        for ox, oy, r in self.OBSTACLES:
+            min_dist = float(r) + float(self.robot_radius) + float(self.start_clearance)
+            if np.linalg.norm(p - np.array([ox, oy], dtype=np.float32)) <= min_dist:
+                return False
+
+        return True
+
+
+    def _sample_start_xy(self) -> np.ndarray:
+        # Uniform sampling inside arena with rejection
+        m = float(self.robot_radius) + float(self.start_border_clearance)
+        rng = getattr(self, "np_random", np.random)  # Gymnasium RNG if available
+        for _ in range(int(self.start_max_tries)):
+            x = rng.uniform(self.x_min + m, self.x_max - m)
+            y = rng.uniform(self.y_min + m, self.y_max - m)
+            xy = np.array([x, y], dtype=np.float32)
+            if self._is_valid_start(xy):
+                return xy
+
+
+        # Fallback: original fixed start if sampling fails
+        return np.array([-0.01, -1.5], dtype=np.float32)
 
 
 
@@ -885,7 +1110,7 @@ class Go2MPCEnv(gym.Env):
         ax.set_aspect("equal", adjustable="box")
         ax.set_xlim(self.x_min - 0.2, self.x_max + 0.2)
         ax.set_ylim(self.y_min - 0.2, self.y_max + 0.2)
-        ax.set_title(f"Episode {self._episode_idx} | event={event} | steps={traj.shape[0]}")
+        ax.set_title(f"Episode {self._episode_idx} | event={event} | steps={traj.shape[0]-1}")
         ax.legend(loc="upper right")
 
         out = self.traj_dir / f"ep_{self._episode_idx:06d}_{event}.png"
@@ -976,6 +1201,26 @@ class Go2MPCEnv(gym.Env):
                     help="If set, periodic eval during training also saves trajectory PNGs.")
 
 
+        # ----------------------------
+        # random start
+        # ----------------------------
+        p.add_argument("--random_start", action="store_true",
+                    help="Randomize start position (keeps away from obstacles/borders).")
+        p.add_argument("--start_clearance", type=float, default=0.25,
+                    help="Extra clearance (m) from obstacle+robot radius when sampling random starts.")
+        p.add_argument("--start_border_clearance", type=float, default=0.15,
+                    help="Extra clearance (m) from borders when sampling random starts.")
+        p.add_argument("--start_max_tries", type=int, default=200,
+                    help="Max rejection-sampling tries for random start.")
+
+        # ----------------------------
+        # crash handling
+        # ----------------------------
+        p.add_argument("--continue_on_crash", action="store_true",
+                    help="If set, crashes do NOT end the episode (episode ends only on goal/timeout).")
+
+
+
 
 
 
@@ -1028,7 +1273,6 @@ class Go2MPCEnv(gym.Env):
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
-        print(">> [Env] reset() called")
 
         self.step_count = 0
 
@@ -1036,7 +1280,12 @@ class Go2MPCEnv(gym.Env):
         self.robot.initialize()
 
         # Start position
-        self.robot.set_world_pose(position=np.array([-0.01, -1.5, 0.35]))
+        if self.random_start:
+            xy = self._sample_start_xy()
+            self.robot.set_world_pose(position=np.array([float(xy[0]), float(xy[1]), 0.35]))
+        else:
+            self.robot.set_world_pose(position=np.array([-0.01, -1.5, 0.35]))
+
 
 
         # Stop any movement
@@ -1062,9 +1311,14 @@ class Go2MPCEnv(gym.Env):
         # ---- Expert label for current state s_t (before applying agent action) ----
         obs_t = self._get_obs()
         expert_u = None
-        if self.planner is not None:
-            self.planner.reset()                 # stateless expert per query
-            expert_u = self.planner.get_action(obs_t).copy()  # shape (2,)
+        if self.collect_expert and (self.planner is not None):
+            self.planner.reset()
+            expert_u = self.planner.get_action(obs_t).copy()
+
+
+        # Save pose before stepping (for crash rollback)
+        pos_before, orient_before = self.robot.get_world_pose()
+
 
         vx, vy = np.clip(action, -2.0, 2.0)
 
@@ -1083,6 +1337,7 @@ class Go2MPCEnv(gym.Env):
 
         # ---- Reward & termination (new) ----
         self.step_count += 1
+        timeout_now = (self.step_count >= self.max_steps)
 
         dist = np.linalg.norm(obs - self.target_pos)
 
@@ -1124,10 +1379,7 @@ class Go2MPCEnv(gym.Env):
             else:
                 reward = -self.crash_cost
 
-            terminated = True
-            truncated = False
-
-            # Signal what happened
+            # pick event label
             if hit_obs:
                 event = "crash_obstacle"
             elif hit_border:
@@ -1140,14 +1392,60 @@ class Go2MPCEnv(gym.Env):
                 "dist": float(dist),
                 "hit_obstacle": bool(hit_obs),
                 "hit_border": bool(hit_border),
-                "border_side": border_side,   # left/right/bottom/top or None
+                "border_side": border_side,
             }
             info["is_success"] = 0.0
             if expert_u is not None:
                 info["Action MPC"] = expert_u
+
+            if self.terminate_on_crash:
+                terminated = True
+                truncated = False
+                self._save_episode_trajectory(event=event)
+                return obs, reward, terminated, truncated, info
+
+            # ----------------------------
+            # NEW: continue-on-crash mode
+            # rollback to last safe pose and keep going
+            # ----------------------------
+            # Remove the crashed point we already appended this step
+            # (so plots do not show an invalid point inside obstacle/wall)
+            if len(self._traj_xy) > 0:
+                self._traj_xy.pop()
+
+            self.robot.set_world_pose(position=pos_before, orientation=orient_before)
+            self.robot.set_linear_velocity(np.array([0.0, 0.0, 0.0]))
+            self.robot.set_angular_velocity(np.array([0.0, 0.0, 0.0]))
+
+            # optional: one settle step (keeps minimal & stable)
+            self.world.step(render=False)
+
+            # Refresh observation after rollback
+            obs = self._get_obs()
+            self._traj_xy.append(obs.copy())
             
-            self._save_episode_trajectory(event=event)
-            return obs, reward, terminated, truncated, info
+            dist = float(np.linalg.norm(obs - self.target_pos))
+            info["dist"] = dist
+
+            # keep shaped progress consistent after rollback
+            if self.reward_mode == "shaped":
+                self.prev_dist = float(dist)
+
+
+
+            # Mark crash happened, but do NOT end episode
+            info["crash_continue"] = True
+
+            # IMPORTANT: enforce timeout even when continuing after crash
+            if timeout_now:
+                info["event"] = "timeout"
+                info["is_success"] = 0.0
+                self._save_episode_trajectory(event="timeout")
+                return obs, reward, False, True, info
+
+            return obs, reward, False, False, info
+
+
 
 
 
@@ -1219,11 +1517,19 @@ def run_evaluation(args, env0, log_root: pathlib.Path):
     env0.save_trajectories = (args.traj_every_eval > 0)
     env0.traj_every = args.traj_every_eval
     env0.traj_dir = traj_dir
+    env0.random_start = args.random_start
+    env0.start_clearance = args.start_clearance
+    env0.start_border_clearance = args.start_border_clearance
+    env0.start_max_tries = args.start_max_tries
+    env0.terminate_on_crash = (not args.continue_on_crash)
+
 
 
     # IMPORTANT: avoid the env computing expert_u inside step() during eval
     # (it's only for imitation labels, and it's expensive)
-    env0.planner = None
+    env0.collect_expert = False
+    env0.planner = None 
+
 
     env = Monitor(env0)
     env.reset(seed=args.seed)
@@ -1260,6 +1566,8 @@ def run_evaluation(args, env0, log_root: pathlib.Path):
         ep_ret = 0.0
         ep_len = 0
 
+        had_crash = False  # NEW: track crashes anywhere in the episode
+
         # For REAP: reset once per episode to start from a cold/warm state (your choice)
         if reap is not None:
             reap.reset()
@@ -1271,21 +1579,30 @@ def run_evaluation(args, env0, log_root: pathlib.Path):
                 action = reap.get_action(obs)
 
             obs, reward, terminated, truncated, info = env.step(action)
+
+            ev = str(info.get("event", ""))
+            if ev.startswith("crash"):
+                had_crash = True
+
             done = bool(terminated or truncated)
+
 
             ep_ret += float(reward)
             ep_len += 1
 
-        # env saved the PNG already (goal/crash/timeout)
-        event = info.get("event", "unknown")
-        events.append(event)
+        end_event = str(info.get("event", "unknown"))
+        events.append(end_event)
         successes.append(float(info.get("is_success", 0.0)))
-        if event == "goal":
+
+        if end_event == "goal":
             n_goal += 1
-        elif event.startswith("crash"):
-            n_crash += 1
-        elif event == "timeout":
+        elif end_event == "timeout":
             n_timeout += 1
+
+        # NEW: crash count = crash-any (works with continue_on_crash)
+        if had_crash:
+            n_crash += 1
+
 
         ep_returns.append(ep_ret)
         ep_lengths.append(ep_len)
@@ -1415,12 +1732,28 @@ def main():
     env0.traj_dir = traj_dir
     env0.save_trajectories = (args.traj_every_train > 0)
     env0.traj_every = args.traj_every_train
+    # Random start options
+    env0.random_start = args.random_start
+    env0.start_clearance = args.start_clearance
+    env0.start_border_clearance = args.start_border_clearance
+    env0.start_max_tries = args.start_max_tries
+
+    # Crash handling option
+    env0.terminate_on_crash = (not args.continue_on_crash)
+
 
 
 
     print(">> [Main] Initialize REAP Brain...")
     planner = REAP_Planner()
-    env0.planner = planner            # <-- ADD THIS LINE
+
+    # Only enable expert labels if imitation is actually going to be used
+    imitation_needed = (args.initial_beta != 0.0) and (args.end_iteration_number > 0)
+
+    env0.planner = planner if imitation_needed else None
+    env0.collect_expert = bool(imitation_needed)
+
+
 
     env = Monitor(env0)
 
@@ -1429,40 +1762,6 @@ def main():
     env.observation_space.seed(args.seed)
 
 
-    # ---- Evaluation env (separate from training env!) ----
-    eval_env0 = Go2MPCEnv()
-    eval_env0.planner = None              # don't compute expert actions during eval
-    eval_env0.save_trajectories = False   # avoid tons of PNGs during periodic eval
-    eval_env0.traj_every = args.traj_every_eval
-    # traj_dir will be set by PeriodicEvalCallback per-eval timestep folder
-
-    
-
-    # after eval_env0 = Go2MPCEnv()
-    eval_env0.w_dist = args.w_dist
-    eval_env0.w_step = args.w_step
-    eval_env0.alive_cost = args.alive_cost
-    eval_env0.goal_reward = args.goal_reward
-    eval_env0.crash_penalty = args.crash_penalty
-    eval_env0.w_progress = args.w_progress
-    eval_env0.w_time = args.w_time
-    eval_env0.w_u = args.w_u
-    eval_env0.safe_margin = args.safe_margin
-    eval_env0.w_safe = args.w_safe
-    eval_env0.use_safety_penalty = args.use_safety_penalty
-
-    eval_env0.reward_mode = args.reward_mode
-    eval_env0.step_cost = args.step_cost
-    eval_env0.goal_cost = args.goal_cost
-    eval_env0.crash_cost = args.crash_cost
-    eval_env0.action_cost = args.action_cost
-
-    if getattr(args, "always_negative_reward", False):
-        eval_env0._configure_always_negative_reward(eps=args.neg_eps)
-
-
-    eval_env = Monitor(eval_env0)
-    eval_env.reset(seed=args.seed + 999)
 
 
 
@@ -1512,9 +1811,55 @@ def main():
     print(">> [Main] Starting PPO_MPC training...")
     train_stats_cb = EpisodeEventStatsCallback(window_episodes=100)
 
-    callbacks = [train_stats_cb]
+    disable_expert_cb = DisableExpertWhenImitationEndsCallback(
+            end_timesteps=args.end_iteration_number,   
+            beta_eps=1e-12,
+            verbose=1,
+        )
 
+    callbacks = [train_stats_cb, disable_expert_cb]
+
+    # ---- ONLY create eval env if you actually want eval during training ----
     if args.eval_freq > 0:
+        eval_env0 = Go2MPCEnv()
+        eval_env0.planner = None
+        eval_env0.save_trajectories = False
+        eval_env0.traj_every = args.traj_every_eval
+
+        # copy reward/termination settings to eval env
+        eval_env0.w_dist = args.w_dist
+        eval_env0.w_step = args.w_step
+        eval_env0.alive_cost = args.alive_cost
+        eval_env0.goal_reward = args.goal_reward
+        eval_env0.crash_penalty = args.crash_penalty
+        eval_env0.w_progress = args.w_progress
+        eval_env0.w_time = args.w_time
+        eval_env0.w_u = args.w_u
+        eval_env0.safe_margin = args.safe_margin
+        eval_env0.w_safe = args.w_safe
+        eval_env0.use_safety_penalty = args.use_safety_penalty
+
+        eval_env0.reward_mode = args.reward_mode
+        eval_env0.step_cost = args.step_cost
+        eval_env0.goal_cost = args.goal_cost
+        eval_env0.crash_cost = args.crash_cost
+        eval_env0.action_cost = args.action_cost
+
+        eval_env0.random_start = args.random_start
+        eval_env0.start_clearance = args.start_clearance
+        eval_env0.start_border_clearance = args.start_border_clearance
+        eval_env0.start_max_tries = args.start_max_tries
+        eval_env0.terminate_on_crash = (not args.continue_on_crash)
+
+        if getattr(args, "always_negative_reward", False):
+            eval_env0._configure_always_negative_reward(eps=args.neg_eps)
+
+        eval_env = Monitor(eval_env0)
+        eval_env.reset(seed=args.seed + 999)
+
+        
+
+
         eval_cb = PeriodicEvalCallback(
             eval_env=eval_env,
             eval_freq=args.eval_freq,
@@ -1524,11 +1869,11 @@ def main():
             traj_every=args.traj_every_eval,
             verbose=1,
         )
-
         callbacks.append(eval_cb)
 
     callback = CallbackList(callbacks)
     model.learn(total_timesteps=args.total_timesteps, tb_log_name=run_name, callback=callback)
+
 
 
 

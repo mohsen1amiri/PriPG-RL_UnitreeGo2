@@ -117,6 +117,18 @@ class PPO_MPC(OnPolicyAlgorithm):
         self.ep = end_iteration_number / n_steps - 1
         self.imitation_target_fn = imitation_target_fn
 
+        # ---- Make imitation schedule & beta readable outside train() ----
+        self.beta = float(Initial_Beta)          # exists even before first train()
+        self.current_beta = self.beta            # stable name for callbacks/inspection
+
+        # Store original timestep thresholds (you said end_iteration_number is TIMESTEPS)
+        self.start_timesteps = int(start_iteration_number)
+        self.end_timesteps = int(end_iteration_number)
+
+        # Track if we already disabled expert labels in the env
+        self._expert_disabled = False
+
+
         # history of positions for plotting in learn()
         self.position_history: list[np.ndarray] = []
 
@@ -152,6 +164,33 @@ class PPO_MPC(OnPolicyAlgorithm):
                 assert self.clip_range_vf > 0, "`clip_range_vf` must be positive or None."
             self.clip_range_vf = get_schedule_fn(self.clip_range_vf)
 
+    def _disable_expert_labels_in_env(self) -> None:
+        """
+        Turns off expert-label generation inside the env (collect_expert/planner).
+        Works with VecEnv/Monitor wrapping.
+        """
+        if self.env is None:
+            return
+
+        env = self.env
+        env_list = env.envs if hasattr(env, "envs") else [env]
+
+        for e in env_list:
+            base = e
+            for _ in range(10):
+                if hasattr(base, "env"):
+                    base = base.env
+                    continue
+                if hasattr(base, "unwrapped"):
+                    base = base.unwrapped
+                break
+
+            if hasattr(base, "collect_expert"):
+                base.collect_expert = False
+            if hasattr(base, "planner"):
+                base.planner = None
+
+
     # ------------------------------------------------------------------ #
     #  Train step (like PPO, plus imitation term)
     # ------------------------------------------------------------------ #
@@ -186,6 +225,37 @@ class PPO_MPC(OnPolicyAlgorithm):
             self.beta = self.initial_beta
 
         continue_training = True
+
+        # ---- Decide whether imitation is active ----
+        # Condition A: beta is effectively zero
+        beta_off = (self.beta <= 0.0)
+
+        # Condition B: timesteps have reached end_timesteps (your meaning of end_iteration_number)
+        # self.num_timesteps exists in SB3 OnPolicyAlgorithm and counts env steps
+        time_off = (self.num_timesteps >= self.end_timesteps)
+
+        # Special case: your "pure imitation" hack
+        if self.initial_beta == 100000:
+            use_imitation = True
+        else:
+            use_imitation = (not beta_off) and (not time_off)
+
+        # Publish beta so external code/callbacks can read it
+        self.current_beta = float(self.beta)
+
+        # --- Effective beta: if imitation is OFF, force beta=0 for mixing & KL logic ---
+        effective_beta = float(self.beta) if use_imitation else 0.0
+
+        # Keep a stable “what we actually used” value for logging/callbacks
+        self.current_beta = effective_beta
+
+        # If imitation is off, disable expert labels in env ONCE (saves huge compute)
+        if (not use_imitation) and (not self._expert_disabled):
+            self._disable_expert_labels_in_env()
+            self._expert_disabled = True
+            if self.verbose >= 1:
+                print(f">> [PPO_MPC] Expert labels disabled at t={self.num_timesteps}, beta={self.beta}")
+
 
         # Epochs
         for epoch in range(self.n_epochs):
@@ -258,38 +328,39 @@ class PPO_MPC(OnPolicyAlgorithm):
                     approx_kl_div = th.mean((th.exp(log_ratio) - 1) - log_ratio).cpu().numpy()
                     approx_kl_divs.append(approx_kl_div)
 
-                if self.target_kl is not None and approx_kl_div > 1.5 * self.target_kl and self.beta == 0.0:
+                if self.target_kl is not None and approx_kl_div > 1.5 * self.target_kl and (not use_imitation):
                     continue_training = False
                     if self.verbose >= 1:
                         print(f"Early stopping at epoch {epoch} due to KL={approx_kl_div:.2f}")
                     break
 
                 # ------------------ imitation / MPC target -------------------
-                if self.imitation_target_fn is not None:
-                    expert_actions_raw = self.imitation_target_fn(obs_batch, actions, infos_batch)
-                    expert_actions = th.as_tensor(expert_actions_raw, device=self.device)
+                # ------------------ imitation / MPC target (ONLY when active) -------------------
+                if use_imitation:
+                    if self.imitation_target_fn is not None:
+                        expert_actions_raw = self.imitation_target_fn(obs_batch, actions, infos_batch)
+                        expert_actions = th.as_tensor(expert_actions_raw, device=self.device)
+                    else:
+                        # original behaviour: read "Action MPC" from infos
+                        expert_actions = th.tensor(
+                            [info["Action MPC"] for info in infos_batch],
+                            device=self.device,
+                        )
+
+                    if isinstance(self.action_space, spaces.Discrete):
+                        expert_actions = expert_actions.long().flatten()
+
+                    dist = self.policy.get_distribution(obs_batch)
+                    expert_actions = expert_actions.to(self.device).float()
+                    log_prob_expert = dist.log_prob(expert_actions)
+                    imitation_loss = -log_prob_expert.mean()
                 else:
-                    # original behaviour: read "Action MPC" from infos
-                    expert_actions = th.tensor(
-                        [info["Action MPC"] for info in infos_batch],
-                        device=self.device,
-                    )
+                    imitation_loss = th.zeros((), device=self.device)
 
-                if isinstance(self.action_space, spaces.Discrete):
-                    expert_actions = expert_actions.long().flatten()
+                imitation_losses.append(float(imitation_loss.detach().cpu().item()))
 
-                # Get policy distribution for current observations
-                dist = self.policy.get_distribution(obs_batch)
 
-                # Make sure expert_actions is float tensor on the right device
-                expert_actions = expert_actions.to(self.device).float()
 
-                # Log probability of expert actions under current policy
-                log_prob_expert = dist.log_prob(expert_actions)  # shape: (batch,) or (batch, 1)
-
-                # Behavior cloning objective: maximise log prob of expert -> minimise negative
-                imitation_loss = -log_prob_expert.mean()
-                imitation_losses.append(imitation_loss.item())
 
 
                 # Combine losses using your original Beta logic
@@ -300,19 +371,20 @@ class PPO_MPC(OnPolicyAlgorithm):
                     loss = self.hu_weight * imitation_loss
                 else:
                     if self.just_beta:
-                        if self.beta == 1.0:
+                        if effective_beta == 1.0:
                             loss = (self.hu_weight * imitation_loss) + td_critic_loss + td_actor_loss
-                        elif self.beta == 0.0:
+                        elif effective_beta == 0.0:
                             loss = td_critic_loss + td_actor_loss
                         else:
-                            loss = (self.hu_weight * self.beta * imitation_loss) + td_actor_loss + td_critic_loss
+                            loss = (self.hu_weight * effective_beta * imitation_loss) + td_actor_loss + td_critic_loss
                     else:
-                        if self.beta == 1.0:
+                        if effective_beta == 1.0:
                             loss = self.hu_weight * imitation_loss + td_critic_loss
-                        elif self.beta == 0.0:
+                        elif effective_beta == 0.0:
                             loss = td_actor_loss + td_critic_loss
                         else:
-                            loss = (self.hu_weight * self.beta * imitation_loss) + (1 - self.beta) * (td_actor_loss ) + td_critic_loss 
+                            loss = (self.hu_weight * effective_beta * imitation_loss) + (1 - effective_beta) * td_actor_loss + td_critic_loss
+
 
                 main_losses.append(loss.item())
 
@@ -375,7 +447,8 @@ class PPO_MPC(OnPolicyAlgorithm):
         self.logger.record("train/clip_range", clip_range)
         if clip_range_vf is not None:
             self.logger.record("train/clip_range_vf", clip_range_vf)
-        self.logger.record("train/Beta", self.beta)
+        self.logger.record("train/Beta", self.current_beta)
+
 
 
 

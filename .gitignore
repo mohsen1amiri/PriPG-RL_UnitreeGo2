@@ -13,6 +13,12 @@ sbatch_frozenlake_many/
 tb_logs_frozenlake/
 Commands
 tb_logs
+sbatch_frozenlake_cost_grid_20260110_180745
+sbatch_shaped_grid_20260112_011339
+ppo_go2_isaacsim_sb3_single_env.zip
+ppo_go2_sliding_mpc_style.zip
+ppo_mpc_go2_sliding_mpc_style.zip
+
 
 
 
