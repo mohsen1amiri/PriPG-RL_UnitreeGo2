@@ -1,0 +1,112 @@
+#!/bin/bash
+# ==============================================================================
+# SAC Baseline Training Script (TRIPLE PARALLEL MODE)
+# ==============================================================================
+#SBATCH --account=naiss2025-22-1763
+#SBATCH --partition=alvis
+#SBATCH --gpus-per-node=A40:1
+#SBATCH --time=7-00:00:00
+#SBATCH --job-name=SAC_Go2_run1
+#SBATCH --output=slurm_logs/sac_triple_%j.out
+#SBATCH --error=slurm_logs/sac_triple_%j.err
+#SBATCH --mail-type=END,FAIL
+# ==============================================================================
+
+set -e
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting TRIPLE SAC training job (ID: ${SLURM_JOB_ID}) on node ${SLURMD_NODENAME}."
+
+export ISAACLAB_ROOT="/mimer/NOBACKUP/groups/naiss2024-22-1645/Paper_CDC/IsaacLab"
+export COMPASS_ROOT="${ISAACLAB_ROOT}/compass_algorithm"
+
+mkdir -p "${ISAACLAB_ROOT}/slurm_logs"
+source "${COMPASS_ROOT}/isaac_helpers.sh"
+cd "${ISAACLAB_ROOT}"
+
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Launching Seed 0 (WITH VIDEO) in background..."
+# ---------------------------------------------------------
+# PROCESS 1 (SEED 0) - Video ON
+# ---------------------------------------------------------
+(
+    export PORTABLE_ROOT="${COMPASS_ROOT}/kit_portable/job_${USER}_${SLURM_JOB_ID}_SEED0"
+    mkdir -p "${PORTABLE_ROOT}/kit_cache" "${PORTABLE_ROOT}/kit_data" "${PORTABLE_ROOT}/kit_logs" "${PORTABLE_ROOT}/kit_documents"
+    
+    isaacrun compass_algorithm/train_compass.py --headless \
+        --algo sac \
+        --seed 0 \
+        --num_envs 1 \
+        --total_timesteps 50_000_000 \
+        --video \
+        --video_length 2_000 \
+        --video_interval 500_000 \
+        --use_3d_action \
+        --max_steps 6_000 \
+        --goal_reward 100.0 \
+        --crash_cost 200.0 \
+        --step_cost 1.0 \
+        --w_progress 50.0 \
+        --goal_tol 0.3 \
+        --robot_radius 0.3 \
+        --leg_reach_margin 0.02 \
+        --wall_margin 0.35
+) &
+
+echo "Waiting 120 seconds for Seed 0 to initialize..."
+sleep 120 
+
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Launching Seed 1 (NO VIDEO) in background..."
+# ---------------------------------------------------------
+# PROCESS 2 (SEED 1) - Video OFF
+# ---------------------------------------------------------
+(
+    export PORTABLE_ROOT="${COMPASS_ROOT}/kit_portable/job_${USER}_${SLURM_JOB_ID}_SEED1"
+    mkdir -p "${PORTABLE_ROOT}/kit_cache" "${PORTABLE_ROOT}/kit_data" "${PORTABLE_ROOT}/kit_logs" "${PORTABLE_ROOT}/kit_documents"
+    
+    isaacrun compass_algorithm/train_compass.py --headless \
+        --algo sac \
+        --seed 1 \
+        --num_envs 1 \
+        --total_timesteps 50_000_000 \
+        --use_3d_action \
+        --max_steps 6_000 \
+        --goal_reward 100.0 \
+        --crash_cost 200.0 \
+        --step_cost 1.0 \
+        --w_progress 50.0 \
+        --goal_tol 0.3 \
+        --robot_radius 0.3 \
+        --leg_reach_margin 0.02 \
+        --wall_margin 0.35
+) &
+
+echo "Waiting 120 seconds for Seed 1 to initialize..."
+sleep 120 
+
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Launching Seed 2 (NO VIDEO) in background..."
+# ---------------------------------------------------------
+# PROCESS 3 (SEED 2) - Video OFF
+# ---------------------------------------------------------
+(
+    export PORTABLE_ROOT="${COMPASS_ROOT}/kit_portable/job_${USER}_${SLURM_JOB_ID}_SEED2"
+    mkdir -p "${PORTABLE_ROOT}/kit_cache" "${PORTABLE_ROOT}/kit_data" "${PORTABLE_ROOT}/kit_logs" "${PORTABLE_ROOT}/kit_documents"
+    
+    isaacrun compass_algorithm/train_compass.py --headless \
+        --algo sac \
+        --seed 2 \
+        --num_envs 1 \
+        --total_timesteps 50_000_000 \
+        --use_3d_action \
+        --max_steps 6_000 \
+        --goal_reward 100.0 \
+        --crash_cost 200.0 \
+        --step_cost 1.0 \
+        --w_progress 50.0 \
+        --goal_tol 0.3 \
+        --robot_radius 0.3 \
+        --leg_reach_margin 0.02 \
+        --wall_margin 0.35
+) &
+
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] All three processes launched. Waiting for them to finish..."
+wait
+
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Job ${SLURM_JOB_ID} completed successfully."

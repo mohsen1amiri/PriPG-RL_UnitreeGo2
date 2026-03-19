@@ -1,0 +1,56 @@
+#!/bin/bash
+# ==============================================================================
+# Accelerated SAC Baseline Training Script
+# ==============================================================================
+#SBATCH --account=naiss2025-22-1453
+#SBATCH --partition=alvis
+#SBATCH --gpus-per-node=T4:1
+#SBATCH --time=1-00:00:00
+#SBATCH --job-name=ASAC_Go2
+#SBATCH --output=slurm_logs/asac_%j.out
+#SBATCH --error=slurm_logs/asac_%j.err
+#SBATCH --mail-type=END,FAIL
+# ==============================================================================
+
+set -e
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting Accelerated SAC job (ID: ${SLURM_JOB_ID}) on node ${SLURMD_NODENAME}."
+
+export ISAACLAB_ROOT="/mimer/NOBACKUP/groups/naiss2024-22-1645/Paper_CDC/IsaacLab"
+export COMPASS_ROOT="${ISAACLAB_ROOT}/compass_algorithm"
+export IL_ROOT="${ISAACLAB_ROOT}/compass_algorithm"
+
+mkdir -p "${ISAACLAB_ROOT}/slurm_logs"
+export PORTABLE_ROOT="${COMPASS_ROOT}/kit_portable/job_${USER}_${SLURM_JOB_ID}"
+
+mkdir -p "${PORTABLE_ROOT}/kit_cache"
+mkdir -p "${PORTABLE_ROOT}/kit_data"
+mkdir -p "${PORTABLE_ROOT}/kit_logs"
+mkdir -p "${PORTABLE_ROOT}/kit_documents"
+
+source "${COMPASS_ROOT}/isaac_helpers.sh"
+cd "${ISAACLAB_ROOT}"
+
+isaacrun compass_algorithm/train_compass.py --headless \
+    --algo accel_sac \
+    --seed 42 \
+    --num_envs 1 \
+    --total_timesteps 50000000 \
+    --video \
+    --video_length 2000 \
+    --video_interval 500000 \
+    --burn_in_steps 200000 \
+    --use_3d_action \
+    --max_steps 6000 \
+    --goal_reward 100.0 \
+    --crash_cost 200.0 \
+    --step_cost 1.0 \
+    --w_progress 50.0 \
+    --goal_tol 0.3 \
+    --robot_radius 0.3 \
+    --leg_reach_margin 0.02 \
+    --wall_margin 0.35 \
+    --planner_horizon 15 \
+    --planner_max_vel 0.25 \
+    --planner_barrier_beta 100.0
+
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Job ${SLURM_JOB_ID} completed successfully."

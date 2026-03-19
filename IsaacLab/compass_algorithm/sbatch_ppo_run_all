@@ -1,0 +1,195 @@
+#!/bin/bash
+# ==============================================================================
+# PPO Baseline Training Script (FIVE PARALLEL RUNS, SINGLE GPU)
+# ==============================================================================
+#SBATCH --account=naiss2025-22-1446
+#SBATCH --partition=alvis
+#SBATCH --gpus-per-node=A100:1
+#SBATCH --time=7-00:00:00
+#SBATCH --job-name=PPO_Go2_run_all
+#SBATCH --output=slurm_logs/ppo_all_%j.out
+#SBATCH --error=slurm_logs/ppo_all_%j.err
+#SBATCH --mail-type=END,FAIL
+# ==============================================================================
+
+set -e
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting PPO 5-run job (ID: ${SLURM_JOB_ID}) on node ${SLURMD_NODENAME}."
+
+export ISAACLAB_ROOT="/mimer/NOBACKUP/groups/naiss2024-22-1645/Paper_CDC/IsaacLab"
+export COMPASS_ROOT="${ISAACLAB_ROOT}/compass_algorithm"
+
+mkdir -p "${ISAACLAB_ROOT}/slurm_logs"
+cd "${ISAACLAB_ROOT}"
+
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Preparing per-run Isaac Lab portable roots..."
+
+# ---------------------------------------------------------
+# PROCESS 1 (SEED 0) - Video ON
+# ---------------------------------------------------------
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Launching Seed 0 (WITH VIDEO) in background..."
+(
+    export CUDA_VISIBLE_DEVICES=0
+    export PORTABLE_ROOT="${COMPASS_ROOT}/kit_portable/job_${USER}_${SLURM_JOB_ID}_SEED0"
+    mkdir -p "${PORTABLE_ROOT}/kit_cache" "${PORTABLE_ROOT}/kit_data" "${PORTABLE_ROOT}/kit_logs" "${PORTABLE_ROOT}/kit_documents"
+
+    # IMPORTANT: source helpers AFTER PORTABLE_ROOT is defined
+    source "${COMPASS_ROOT}/isaac_helpers.sh"
+    
+    isaacrun compass_algorithm/train_compass_v2.py --headless \
+        --device cuda:0 \
+        --algo ppo \
+        --seed 0 \
+        --num_envs 1 \
+        --total_timesteps 50_000_000 \
+        --video \
+        --video_length 2_000 \
+        --video_interval 500_000 \
+        --action_mode x_yaw \
+        --max_steps 6_000 \
+        --goal_reward 100.0 \
+        --crash_cost 200.0 \
+        --step_cost 1.0 \
+        --w_progress 50.0 \
+        --goal_tol 0.3 \
+        --robot_radius 0.3 \
+        --leg_reach_margin 0.02 \
+        --wall_margin 0.35 \
+        > "${ISAACLAB_ROOT}/slurm_logs/ppo_seed0_${SLURM_JOB_ID}.log" 2>&1
+) &
+
+echo "Waiting 120 seconds for Seed 0 to initialize..."
+sleep 120
+
+# ---------------------------------------------------------
+# PROCESS 2 (SEED 1) - Video OFF
+# ---------------------------------------------------------
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Launching Seed 1 (NO VIDEO) in background..."
+(
+    export CUDA_VISIBLE_DEVICES=0
+    export PORTABLE_ROOT="${COMPASS_ROOT}/kit_portable/job_${USER}_${SLURM_JOB_ID}_SEED1"
+    mkdir -p "${PORTABLE_ROOT}/kit_cache" "${PORTABLE_ROOT}/kit_data" "${PORTABLE_ROOT}/kit_logs" "${PORTABLE_ROOT}/kit_documents"
+
+    source "${COMPASS_ROOT}/isaac_helpers.sh"
+    
+    isaacrun compass_algorithm/train_compass_v2.py --headless \
+        --device cuda:0 \
+        --algo ppo \
+        --seed 1 \
+        --num_envs 1 \
+        --total_timesteps 50_000_000 \
+        --action_mode x_yaw \
+        --max_steps 6_000 \
+        --goal_reward 100.0 \
+        --crash_cost 200.0 \
+        --step_cost 1.0 \
+        --w_progress 50.0 \
+        --goal_tol 0.3 \
+        --robot_radius 0.3 \
+        --leg_reach_margin 0.02 \
+        --wall_margin 0.35 \
+        > "${ISAACLAB_ROOT}/slurm_logs/ppo_seed1_${SLURM_JOB_ID}.log" 2>&1
+) &
+
+echo "Waiting 120 seconds for Seed 1 to initialize..."
+sleep 240
+
+# ---------------------------------------------------------
+# PROCESS 3 (SEED 2) - Video OFF
+# ---------------------------------------------------------
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Launching Seed 2 (NO VIDEO) in background..."
+(
+    export CUDA_VISIBLE_DEVICES=0
+    export PORTABLE_ROOT="${COMPASS_ROOT}/kit_portable/job_${USER}_${SLURM_JOB_ID}_SEED2"
+    mkdir -p "${PORTABLE_ROOT}/kit_cache" "${PORTABLE_ROOT}/kit_data" "${PORTABLE_ROOT}/kit_logs" "${PORTABLE_ROOT}/kit_documents"
+
+    source "${COMPASS_ROOT}/isaac_helpers.sh"
+    
+    isaacrun compass_algorithm/train_compass_v2.py --headless \
+        --device cuda:0 \
+        --algo ppo \
+        --seed 2 \
+        --num_envs 1 \
+        --total_timesteps 50_000_000 \
+        --action_mode x_yaw \
+        --max_steps 6_000 \
+        --goal_reward 100.0 \
+        --crash_cost 200.0 \
+        --step_cost 1.0 \
+        --w_progress 50.0 \
+        --goal_tol 0.3 \
+        --robot_radius 0.3 \
+        --leg_reach_margin 0.02 \
+        --wall_margin 0.35 \
+        > "${ISAACLAB_ROOT}/slurm_logs/ppo_seed2_${SLURM_JOB_ID}.log" 2>&1
+) &
+
+echo "Waiting 120 seconds for Seed 2 to initialize..."
+sleep 360
+
+# ---------------------------------------------------------
+# PROCESS 4 (SEED 3) - Video OFF
+# ---------------------------------------------------------
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Launching Seed 3 (NO VIDEO) in background..."
+(
+    export CUDA_VISIBLE_DEVICES=0
+    export PORTABLE_ROOT="${COMPASS_ROOT}/kit_portable/job_${USER}_${SLURM_JOB_ID}_SEED3"
+    mkdir -p "${PORTABLE_ROOT}/kit_cache" "${PORTABLE_ROOT}/kit_data" "${PORTABLE_ROOT}/kit_logs" "${PORTABLE_ROOT}/kit_documents"
+
+    source "${COMPASS_ROOT}/isaac_helpers.sh"
+    
+    isaacrun compass_algorithm/train_compass_v2.py --headless \
+        --device cuda:0 \
+        --algo ppo \
+        --seed 3 \
+        --num_envs 1 \
+        --total_timesteps 50_000_000 \
+        --action_mode x_yaw \
+        --max_steps 6_000 \
+        --goal_reward 100.0 \
+        --crash_cost 200.0 \
+        --step_cost 1.0 \
+        --w_progress 50.0 \
+        --goal_tol 0.3 \
+        --robot_radius 0.3 \
+        --leg_reach_margin 0.02 \
+        --wall_margin 0.35 \
+        > "${ISAACLAB_ROOT}/slurm_logs/ppo_seed3_${SLURM_JOB_ID}.log" 2>&1
+) &
+
+echo "Waiting 120 seconds for Seed 3 to initialize..."
+sleep 480
+
+# ---------------------------------------------------------
+# PROCESS 5 (SEED 4) - Video OFF
+# ---------------------------------------------------------
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Launching Seed 4 (NO VIDEO) in background..."
+(
+    export CUDA_VISIBLE_DEVICES=0
+    export PORTABLE_ROOT="${COMPASS_ROOT}/kit_portable/job_${USER}_${SLURM_JOB_ID}_SEED4"
+    mkdir -p "${PORTABLE_ROOT}/kit_cache" "${PORTABLE_ROOT}/kit_data" "${PORTABLE_ROOT}/kit_logs" "${PORTABLE_ROOT}/kit_documents"
+
+    source "${COMPASS_ROOT}/isaac_helpers.sh"
+    
+    isaacrun compass_algorithm/train_compass_v2.py --headless \
+        --device cuda:0 \
+        --algo ppo \
+        --seed 4 \
+        --num_envs 1 \
+        --total_timesteps 50_000_000 \
+        --action_mode x_yaw \
+        --max_steps 6_000 \
+        --goal_reward 100.0 \
+        --crash_cost 200.0 \
+        --step_cost 1.0 \
+        --w_progress 50.0 \
+        --goal_tol 0.3 \
+        --robot_radius 0.3 \
+        --leg_reach_margin 0.02 \
+        --wall_margin 0.35 \
+        > "${ISAACLAB_ROOT}/slurm_logs/ppo_seed4_${SLURM_JOB_ID}.log" 2>&1
+) &
+
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] All five processes launched. Waiting for them to finish..."
+wait
+
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Job ${SLURM_JOB_ID} completed successfully."

@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+#SBATCH --export=ALL
+#SBATCH -A NAISS2025-22-1763
+#SBATCH -p alvis
+#SBATCH -N 1
+#SBATCH --gpus-per-node=A40:1
+#SBATCH -t 7-00:00:00
+#SBATCH -J shaped_0000
+#SBATCH -o /mimer/NOBACKUP/groups/naiss2024-22-1645/Paper_CDC/sbatch_shaped_grid_20260112_011339/logs/shaped_0000_%j.out
+#SBATCH -e /mimer/NOBACKUP/groups/naiss2024-22-1645/Paper_CDC/sbatch_shaped_grid_20260112_011339/logs/shaped_0000_%j.err
+
+set -euo pipefail
+umask 027
+
+echo "Job: ${SLURM_JOB_NAME}  ID: ${SLURM_JOB_ID}"
+echo "Node(s): ${SLURM_JOB_NODELIST}"
+echo "Start: $(date -Is)"
+
+source /cephyr/users/mohsena/Alvis/portal/vscode/Paper_CDC.sh
+cd /mimer/NOBACKUP/groups/naiss2024-22-1645/Paper_CDC
+echo "Running in: $(pwd)"
+
+LOGDIR=/mimer/NOBACKUP/groups/naiss2024-22-1645/Paper_CDC/sbatch_shaped_grid_20260112_011339/logs
+mkdir -p "$LOGDIR"
+
+MAX_PARALLEL=10
+pids=()
+cleanup() {
+  for pid in "${pids[@]:-}"; do
+    kill "$pid" 2>/dev/null || true
+  done
+}
+trap cleanup EXIT INT TERM
+
+run_bg() {
+  local OUT_FILE="$1"
+  local ERR_FILE="$2"
+  shift 2
+  "$@" >"$OUT_FILE" 2>"$ERR_FILE" &
+  pids+=("$!")
+  if [ ${#pids[@]} -ge "$MAX_PARALLEL" ]; then
+    echo ">> wait (batch of $MAX_PARALLEL)"
+    for pid in "${pids[@]}"; do
+      wait "$pid" || exit 1
+    done
+    pids=()
+  fi
+}
+
+
+tag=rmshaped_s0_lr0p0001_g0p999_ns1024_bs128_L3_H256_rs0_coc1_sc1_gc0_cc200_ac0p01
+OUT_FILE="$LOGDIR/${tag}_${SLURM_JOB_ID}.out"
+ERR_FILE="$LOGDIR/${tag}_${SLURM_JOB_ID}.err"
+echo "RUN: ${tag}"
+run_bg "$OUT_FILE" "$ERR_FILE" isaacpy go2_reap_ppo_mpc.py --total_timesteps 60000000 --lr 0.0001 --gamma 0.999 --n_steps 1024 --batch_size 128 --n_epochs 10 --max_grad_norm 1.0 --mse_weight 1.0 --initial_beta 0.0 --end_iteration_number 1000000 --w_dist 10.0 --w_step 0.5 --alive_cost 1.0 --goal_reward 1000.0 --crash_penalty 1000.0 --w_progress 100.0 --w_time 1.0 --w_u 0.05 --safe_margin 0.15 --w_safe 5.0 --neg_eps 1e-06 --net_layers 3 --net_nodes 256 --seed 0 --reward_mode shaped --step_cost 1.0 --goal_cost 0.0 --crash_cost 200.0 --action_cost 0.01 --mode train --eval_algo rl --eval_episodes 20 --model_path ppo_mpc_go2_sliding_mpc_style.zip --eval_freq 0 --eval_n_episodes 20 --traj_every_train 10 --traj_every_eval 10 --start_clearance 0.25 --start_border_clearance 0.15 --start_max_tries 200 --continue_on_crash --log_root tb_logs
+
+tag=rmshaped_s0_lr0p0001_g0p999_ns1024_bs128_L3_H256_rs1_coc1_sc1_gc0_cc200_ac0p01
+OUT_FILE="$LOGDIR/${tag}_${SLURM_JOB_ID}.out"
+ERR_FILE="$LOGDIR/${tag}_${SLURM_JOB_ID}.err"
+echo "RUN: ${tag}"
+run_bg "$OUT_FILE" "$ERR_FILE" isaacpy go2_reap_ppo_mpc.py --total_timesteps 60000000 --lr 0.0001 --gamma 0.999 --n_steps 1024 --batch_size 128 --n_epochs 10 --max_grad_norm 1.0 --mse_weight 1.0 --initial_beta 0.0 --end_iteration_number 1000000 --w_dist 10.0 --w_step 0.5 --alive_cost 1.0 --goal_reward 1000.0 --crash_penalty 1000.0 --w_progress 100.0 --w_time 1.0 --w_u 0.05 --safe_margin 0.15 --w_safe 5.0 --neg_eps 1e-06 --net_layers 3 --net_nodes 256 --seed 0 --reward_mode shaped --step_cost 1.0 --goal_cost 0.0 --crash_cost 200.0 --action_cost 0.01 --mode train --eval_algo rl --eval_episodes 20 --model_path ppo_mpc_go2_sliding_mpc_style.zip --eval_freq 0 --eval_n_episodes 20 --traj_every_train 10 --traj_every_eval 10 --random_start --start_clearance 0.25 --start_border_clearance 0.15 --start_max_tries 200 --continue_on_crash --log_root tb_logs
+
+tag=rmshaped_s0_lr0p0001_g0p999_ns1024_bs128_L3_H512_rs0_coc1_sc1_gc0_cc200_ac0p01
+OUT_FILE="$LOGDIR/${tag}_${SLURM_JOB_ID}.out"
+ERR_FILE="$LOGDIR/${tag}_${SLURM_JOB_ID}.err"
+echo "RUN: ${tag}"
+run_bg "$OUT_FILE" "$ERR_FILE" isaacpy go2_reap_ppo_mpc.py --total_timesteps 60000000 --lr 0.0001 --gamma 0.999 --n_steps 1024 --batch_size 128 --n_epochs 10 --max_grad_norm 1.0 --mse_weight 1.0 --initial_beta 0.0 --end_iteration_number 1000000 --w_dist 10.0 --w_step 0.5 --alive_cost 1.0 --goal_reward 1000.0 --crash_penalty 1000.0 --w_progress 100.0 --w_time 1.0 --w_u 0.05 --safe_margin 0.15 --w_safe 5.0 --neg_eps 1e-06 --net_layers 3 --net_nodes 512 --seed 0 --reward_mode shaped --step_cost 1.0 --goal_cost 0.0 --crash_cost 200.0 --action_cost 0.01 --mode train --eval_algo rl --eval_episodes 20 --model_path ppo_mpc_go2_sliding_mpc_style.zip --eval_freq 0 --eval_n_episodes 20 --traj_every_train 10 --traj_every_eval 10 --start_clearance 0.25 --start_border_clearance 0.15 --start_max_tries 200 --continue_on_crash --log_root tb_logs
+
+tag=rmshaped_s0_lr0p0001_g0p999_ns1024_bs128_L3_H512_rs1_coc1_sc1_gc0_cc200_ac0p01
+OUT_FILE="$LOGDIR/${tag}_${SLURM_JOB_ID}.out"
+ERR_FILE="$LOGDIR/${tag}_${SLURM_JOB_ID}.err"
+echo "RUN: ${tag}"
+run_bg "$OUT_FILE" "$ERR_FILE" isaacpy go2_reap_ppo_mpc.py --total_timesteps 60000000 --lr 0.0001 --gamma 0.999 --n_steps 1024 --batch_size 128 --n_epochs 10 --max_grad_norm 1.0 --mse_weight 1.0 --initial_beta 0.0 --end_iteration_number 1000000 --w_dist 10.0 --w_step 0.5 --alive_cost 1.0 --goal_reward 1000.0 --crash_penalty 1000.0 --w_progress 100.0 --w_time 1.0 --w_u 0.05 --safe_margin 0.15 --w_safe 5.0 --neg_eps 1e-06 --net_layers 3 --net_nodes 512 --seed 0 --reward_mode shaped --step_cost 1.0 --goal_cost 0.0 --crash_cost 200.0 --action_cost 0.01 --mode train --eval_algo rl --eval_episodes 20 --model_path ppo_mpc_go2_sliding_mpc_style.zip --eval_freq 0 --eval_n_episodes 20 --traj_every_train 10 --traj_every_eval 10 --random_start --start_clearance 0.25 --start_border_clearance 0.15 --start_max_tries 200 --continue_on_crash --log_root tb_logs
+
+tag=rmshaped_s0_lr0p0001_g0p999_ns2048_bs128_L3_H256_rs0_coc1_sc1_gc0_cc200_ac0p01
+OUT_FILE="$LOGDIR/${tag}_${SLURM_JOB_ID}.out"
+ERR_FILE="$LOGDIR/${tag}_${SLURM_JOB_ID}.err"
+echo "RUN: ${tag}"
+run_bg "$OUT_FILE" "$ERR_FILE" isaacpy go2_reap_ppo_mpc.py --total_timesteps 60000000 --lr 0.0001 --gamma 0.999 --n_steps 2048 --batch_size 128 --n_epochs 10 --max_grad_norm 1.0 --mse_weight 1.0 --initial_beta 0.0 --end_iteration_number 1000000 --w_dist 10.0 --w_step 0.5 --alive_cost 1.0 --goal_reward 1000.0 --crash_penalty 1000.0 --w_progress 100.0 --w_time 1.0 --w_u 0.05 --safe_margin 0.15 --w_safe 5.0 --neg_eps 1e-06 --net_layers 3 --net_nodes 256 --seed 0 --reward_mode shaped --step_cost 1.0 --goal_cost 0.0 --crash_cost 200.0 --action_cost 0.01 --mode train --eval_algo rl --eval_episodes 20 --model_path ppo_mpc_go2_sliding_mpc_style.zip --eval_freq 0 --eval_n_episodes 20 --traj_every_train 10 --traj_every_eval 10 --start_clearance 0.25 --start_border_clearance 0.15 --start_max_tries 200 --continue_on_crash --log_root tb_logs
+
+tag=rmshaped_s0_lr0p0001_g0p999_ns2048_bs128_L3_H256_rs1_coc1_sc1_gc0_cc200_ac0p01
+OUT_FILE="$LOGDIR/${tag}_${SLURM_JOB_ID}.out"
+ERR_FILE="$LOGDIR/${tag}_${SLURM_JOB_ID}.err"
+echo "RUN: ${tag}"
+run_bg "$OUT_FILE" "$ERR_FILE" isaacpy go2_reap_ppo_mpc.py --total_timesteps 60000000 --lr 0.0001 --gamma 0.999 --n_steps 2048 --batch_size 128 --n_epochs 10 --max_grad_norm 1.0 --mse_weight 1.0 --initial_beta 0.0 --end_iteration_number 1000000 --w_dist 10.0 --w_step 0.5 --alive_cost 1.0 --goal_reward 1000.0 --crash_penalty 1000.0 --w_progress 100.0 --w_time 1.0 --w_u 0.05 --safe_margin 0.15 --w_safe 5.0 --neg_eps 1e-06 --net_layers 3 --net_nodes 256 --seed 0 --reward_mode shaped --step_cost 1.0 --goal_cost 0.0 --crash_cost 200.0 --action_cost 0.01 --mode train --eval_algo rl --eval_episodes 20 --model_path ppo_mpc_go2_sliding_mpc_style.zip --eval_freq 0 --eval_n_episodes 20 --traj_every_train 10 --traj_every_eval 10 --random_start --start_clearance 0.25 --start_border_clearance 0.15 --start_max_tries 200 --continue_on_crash --log_root tb_logs
+
+tag=rmshaped_s0_lr0p0001_g0p999_ns2048_bs128_L3_H512_rs0_coc1_sc1_gc0_cc200_ac0p01
+OUT_FILE="$LOGDIR/${tag}_${SLURM_JOB_ID}.out"
+ERR_FILE="$LOGDIR/${tag}_${SLURM_JOB_ID}.err"
+echo "RUN: ${tag}"
+run_bg "$OUT_FILE" "$ERR_FILE" isaacpy go2_reap_ppo_mpc.py --total_timesteps 60000000 --lr 0.0001 --gamma 0.999 --n_steps 2048 --batch_size 128 --n_epochs 10 --max_grad_norm 1.0 --mse_weight 1.0 --initial_beta 0.0 --end_iteration_number 1000000 --w_dist 10.0 --w_step 0.5 --alive_cost 1.0 --goal_reward 1000.0 --crash_penalty 1000.0 --w_progress 100.0 --w_time 1.0 --w_u 0.05 --safe_margin 0.15 --w_safe 5.0 --neg_eps 1e-06 --net_layers 3 --net_nodes 512 --seed 0 --reward_mode shaped --step_cost 1.0 --goal_cost 0.0 --crash_cost 200.0 --action_cost 0.01 --mode train --eval_algo rl --eval_episodes 20 --model_path ppo_mpc_go2_sliding_mpc_style.zip --eval_freq 0 --eval_n_episodes 20 --traj_every_train 10 --traj_every_eval 10 --start_clearance 0.25 --start_border_clearance 0.15 --start_max_tries 200 --continue_on_crash --log_root tb_logs
+
+tag=rmshaped_s0_lr0p0001_g0p999_ns2048_bs128_L3_H512_rs1_coc1_sc1_gc0_cc200_ac0p01
+OUT_FILE="$LOGDIR/${tag}_${SLURM_JOB_ID}.out"
+ERR_FILE="$LOGDIR/${tag}_${SLURM_JOB_ID}.err"
+echo "RUN: ${tag}"
+run_bg "$OUT_FILE" "$ERR_FILE" isaacpy go2_reap_ppo_mpc.py --total_timesteps 60000000 --lr 0.0001 --gamma 0.999 --n_steps 2048 --batch_size 128 --n_epochs 10 --max_grad_norm 1.0 --mse_weight 1.0 --initial_beta 0.0 --end_iteration_number 1000000 --w_dist 10.0 --w_step 0.5 --alive_cost 1.0 --goal_reward 1000.0 --crash_penalty 1000.0 --w_progress 100.0 --w_time 1.0 --w_u 0.05 --safe_margin 0.15 --w_safe 5.0 --neg_eps 1e-06 --net_layers 3 --net_nodes 512 --seed 0 --reward_mode shaped --step_cost 1.0 --goal_cost 0.0 --crash_cost 200.0 --action_cost 0.01 --mode train --eval_algo rl --eval_episodes 20 --model_path ppo_mpc_go2_sliding_mpc_style.zip --eval_freq 0 --eval_n_episodes 20 --traj_every_train 10 --traj_every_eval 10 --random_start --start_clearance 0.25 --start_border_clearance 0.15 --start_max_tries 200 --continue_on_crash --log_root tb_logs
+
+echo ">> final wait"
+for pid in "${pids[@]:-}"; do wait "$pid" || exit 1; done
+echo "All runs finished."
+echo "End: $(date -Is)"

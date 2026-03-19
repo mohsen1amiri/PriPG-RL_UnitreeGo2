@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+#SBATCH --account=NAISS2025-22-1763
+#SBATCH --partition=alvis
+#SBATCH --nodes=1
+#SBATCH --gpus-per-node=A40:1
+#SBATCH --time=1-00:00:00
+#SBATCH --job-name=go2_sanity
+#SBATCH --output=/mimer/NOBACKUP/groups/naiss2024-22-1645/Paper_CDC/logs/%x_%j.out
+#SBATCH --error=/mimer/NOBACKUP/groups/naiss2024-22-1645/Paper_CDC/logs/%x_%j.err
+#SBATCH --export=ALL
+
+set -euo pipefail
+umask 027
+
+WORKDIR="/mimer/NOBACKUP/groups/naiss2024-22-1645/Paper_CDC"
+ENV_SCRIPT="/cephyr/users/mohsena/Alvis/portal/vscode/Paper_CDC.sh"
+LOGDIR="${WORKDIR}/logs"
+mkdir -p "$LOGDIR"
+cd "$WORKDIR"
+
+export PYTHONUNBUFFERED=1
+
+echo "Job: ${SLURM_JOB_NAME}  ID: ${SLURM_JOB_ID}"
+echo "Node(s): ${SLURM_JOB_NODELIST}"
+echo "Start: $(date -Is)"
+echo "Workdir: $(pwd)"
+
+source "$ENV_SCRIPT"
+
+# Capture EVERYTHING that goes to stdout/stderr
+export PYTHONUNBUFFERED=1
+isaacpy p2p-SAC_v1.py \
+  --mode sanity \
+  --reward_mode shaped \
+  --w_progress 50 --w_time 0.01 --w_u 0.05 \
+  --goal_reward 1000 --crash_penalty 1000 \
+  --start_clearance 0.25 --start_border_clearance 0.15 \
+  2>&1 | tee -a "$LOGDIR/console_${SLURM_JOB_ID}.log"
+
+# Also copy Isaac Kit logs (often where “missing” logs are)
+find /isaac-sim/kit/logs -type f -name "kit_*.log" -mmin -180 -print -exec cp -v {} "$LOGDIR/" \; || true
+
+echo "End: $(date -Is)"

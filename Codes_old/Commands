@@ -1,0 +1,9 @@
+source /cephyr/users/mohsena/Alvis/portal/vscode/Paper_CDC.sh
+isaacpy go2_minimal_rl_loop_v2.py 
+isaacpy go2_reap_ppo_mpc.py
+
+isaacpy go2_reap_ppo_mpc.py --lr 1e-4 --gamma 0.98 --n_steps 1024 --batch_size 128 --n_epochs 100 --end_iteration_number 50_000 & isaacpy go2_reap_ppo_mpc.py --lr 1e-4 --gamma 0.98 --n_steps 2048 --batch_size 128 --n_epochs 100 --end_iteration_number 50_000 & isaacpy go2_reap_ppo_mpc.py --lr 1e-4 --gamma 0.98 --n_steps 1024 --batch_size 128 --n_epochs 50 --end_iteration_number 50_000 & isaacpy go2_reap_ppo_mpc.py --lr 1e-4 --gamma 0.98 --n_steps 1024 --batch_size 128 --n_epochs 400 --end_iteration_number 50_000 & isaacpy go2_reap_ppo_mpc.py --lr 1e-4 --gamma 0.98 --n_steps 1024 --batch_size 128 --n_epochs 100 --end_iteration_number 100_000 & wait 
+
+isaacpy  go2_reap_ppo_mpc.py   --mode eval   --eval_algo reap   --eval_episodes 30
+
+isaacpy go2_reap_ppo_mpc.py --seed 0 --lr 1e-4 --n_steps 1024 --batch_size 128 --net_layers 2 --net_nodes 256 --end_iteration_number 300_000 --reward_mode frozenlake_cost --step_cost 1.0 --goal_cost 0.0 --crash_cost 200.0 --action_cost 0.00 --gamma 0.98 --total_timesteps 5_000_000 --n_epochs 10 --max_grad_norm 10.0 --mse_weight 1.0 --initial_beta 1.0 --safe_margin 0.15 --w_safe 5 --log_root tb_logs_frozenlake --traj_every_train 10 --traj_every_eval 10 --save_eval_traj_during_train --eval_freq 0 --eval_n_episodes 20 --deterministic

@@ -1,0 +1,58 @@
+
+
+#cmd 1
+
+export IL_ROOT=/mimer/NOBACKUP/groups/naiss2024-22-1645/Paper_CDC/locomotion_policy
+export ISAACLAB_ROOT=/mimer/NOBACKUP/groups/naiss2024-22-1645/Paper_CDC/IsaacLab
+
+# (optional) make PORTABLE_ROOT job-specific automatically (recommended)
+export PORTABLE_ROOT="$IL_ROOT/kit_portable/job_${USER}_${SLURM_JOB_ID:-manual}"
+
+# load helper functions (isaacpy/isaacrun/isaacpip)
+source "$IL_ROOT/isaac_helpers.sh"
+
+# go to repo (important because /workspace maps to ISAACLAB_ROOT)
+cd "$ISAACLAB_ROOT"
+
+#cmd 2
+PORTABLE_ROOT=$PWD/.kit_portable
+mkdir -p "$PORTABLE_ROOT"
+
+isaacrun scripts/reinforcement_learning/rsl_rl/play.py --task Isaac-Velocity-Flat-Unitree-Go2-v0 --num_envs 8 --video --video_length 3000 --use_pretrained_checkpoint --device cuda:0
+#cmd 2
+
+# isaacpy() {
+#   "$CNT" exec --nv $ISAAC_BIND --bind "$PWD":/workspace "$IMG" \
+#     env ACCEPT_EULA=Y \
+#         PYTHONUSERBASE=/ext/pip \
+#         PATH="/ext/pip/bin:$PATH" \
+#         PYTHONPATH="/ext/pip/lib/python3.11/site-packages:/workspace/source/isaaclab:/workspace/source/isaaclab_tasks:/workspace/source/isaaclab_rl" \
+#         OMNI_CONFIG_PATH="$PORTABLE_ROOT/omni_config" \
+#         XDG_CACHE_HOME="$PORTABLE_ROOT/xdg_cache" \
+#         XDG_DATA_HOME="$PORTABLE_ROOT/xdg_data" \
+#         XDG_CONFIG_HOME="$PORTABLE_ROOT/xdg_config" \
+#     /isaac-sim/python.sh "$@"
+# }
+
+# isaacrun() {
+#   local script="$1"; shift
+#   "$CNT" exec --nv $ISAAC_BIND --bind "$PWD":/workspace "$IMG" \
+#     env ACCEPT_EULA=Y \
+#         PYTHONUSERBASE=/ext/pip \
+#         PATH="/ext/pip/bin:$PATH" \
+#         PYTHONPATH="/ext/pip/lib/python3.11/site-packages:/workspace/source/isaaclab:/workspace/source/isaaclab_tasks:/workspace/source/isaaclab_rl" \
+#         OMNI_CONFIG_PATH="$PORTABLE_ROOT/omni_config" \
+#         XDG_CACHE_HOME="$PORTABLE_ROOT/xdg_cache" \
+#         XDG_DATA_HOME="$PORTABLE_ROOT/xdg_data" \
+#         XDG_CONFIG_HOME="$PORTABLE_ROOT/xdg_config" \
+#     /isaac-sim/python.sh "/workspace/$script" "$@"
+# }
+
+# export -f isaacpy isaacrun
+
+#cmd 3
+
+# echo "PORTABLE_ROOT=$PORTABLE_ROOT"
+# isaacnvidia
+# isaacpy -c "import isaaclab, isaaclab.app; print('isaaclab OK:', isaaclab.__file__)"
+# isaacpy -c "import flatdict, rsl_rl; print('deps OK')"

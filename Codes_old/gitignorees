@@ -1,0 +1,41 @@
+# 1. Python Caches & Environments
+__pycache__/
+*.py[cod]
+.tmp/
+.pipcache/
+.pyuserbase/
+pipbase/
+bin/
+
+# 2. Slurm Outputs, Logs, and Heavy Zips
+*.log
+*.out
+*.err
+*.zip
+slurm_logs/
+tb_logs/
+training_outputs/
+sbatch_*/logs/
+sbatch_*/0/
+
+# 3. Isaac Lab & Omniverse Heavy Directories
+isaac_portable_*/
+isaac_userroot/
+kit_portable/
+home_trash_*/
+
+# 4. Clean up sub-directories (like locomotion_policy)
+locomotion_policy/isaac_userroot/
+locomotion_policy/kit_portable/
+locomotion_policy/pipbase/
+locomotion_policy/.pipcache/
+locomotion_policy/.pyuserbase/
+locomotion_policy/.tmp/
+
+# 5. The IsaacLab Exception Rule
+# Ignore everything inside IsaacLab...
+IsaacLab/*
+# ...BUT keep the compass_algorithm folder!
+!IsaacLab/compass_algorithm/
+
+

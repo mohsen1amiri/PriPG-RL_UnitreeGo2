@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+#SBATCH -A naiss2024-22-1645 -p alvis
+#SBATCH -N 1 --gpus-per-node=A40:1
+#SBATCH -t 1-00:00:00
+ml load CUDA-Python/12.1.0-gfbf-2023a-CUDA-12.1.1

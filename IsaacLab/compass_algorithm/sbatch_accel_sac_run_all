@@ -1,0 +1,260 @@
+#!/bin/bash
+# ==============================================================================
+# Accelerated SAC Baseline Training Script (ALL RUNs, SINGLE GPU)
+# ==============================================================================
+#SBATCH --account=naiss2025-5-631
+#SBATCH --partition=alvis
+#SBATCH --gpus-per-node=A100:1
+#SBATCH --time=7-00:00:00
+#SBATCH --job-name=ASAC_Go2_modified_run_all
+#SBATCH --output=slurm_logs/asac_all_%j.out
+#SBATCH --error=slurm_logs/asac_all_%j.err
+#SBATCH --mail-type=END,FAIL
+# ==============================================================================
+
+set -e
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting ASAC ALL job (ID: ${SLURM_JOB_ID}) on node ${SLURMD_NODENAME}."
+
+# ------------------------------------------------------------------------------
+# 1. Environment & Path Configuration
+# ------------------------------------------------------------------------------
+export ISAACLAB_ROOT="/mimer/NOBACKUP/groups/naiss2024-22-1645/Paper_CDC/IsaacLab"
+export COMPASS_ROOT="${ISAACLAB_ROOT}/compass_algorithm"
+export IL_ROOT="${ISAACLAB_ROOT}/compass_algorithm"
+
+mkdir -p "${ISAACLAB_ROOT}/slurm_logs"
+cd "${ISAACLAB_ROOT}"
+
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Preparing per-run Isaac Lab portable roots..."
+
+# ------------------------------------------------------------------------------
+# 2. RUN 1 (GPU 0 - Seed 0)
+# ------------------------------------------------------------------------------
+(
+    export CUDA_VISIBLE_DEVICES=0
+    export PORTABLE_ROOT="${COMPASS_ROOT}/kit_portable/job_${USER}_${SLURM_JOB_ID}_run1"
+
+    mkdir -p "${PORTABLE_ROOT}/kit_cache"
+    mkdir -p "${PORTABLE_ROOT}/kit_data"
+    mkdir -p "${PORTABLE_ROOT}/kit_logs"
+    mkdir -p "${PORTABLE_ROOT}/kit_documents"
+
+    # IMPORTANT: source helpers AFTER PORTABLE_ROOT is defined
+    source "${COMPASS_ROOT}/isaac_helpers.sh"
+
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Launching Run 1 (Seed 0) on Shared GPU 0..."
+
+    isaacrun compass_algorithm/train_compass_v2.py --headless \
+        --device cuda:0 \
+        --algo accel_sac \
+        --seed 0 \
+        --num_envs 1 \
+        --total_timesteps 50_000_000 \
+        --video \
+        --video_length 2_000 \
+        --video_interval 500_000 \
+        --asac_beta_0 10.0 \
+        --asac_plateau_steps 200_000 \
+        --asac_decay_steps 500_000 \
+        --asac_c2_noise 0.01 \
+        --action_mode x_yaw \
+        --max_steps 6_000 \
+        --goal_reward 100.0 \
+        --crash_cost 200.0 \
+        --step_cost 1.0 \
+        --w_progress 50.0 \
+        --goal_tol 0.3 \
+        --robot_radius 0.3 \
+        --leg_reach_margin 0.02 \
+        --wall_margin 0.35 \
+        --planner_horizon 15 \
+        --planner_max_vel 0.5 \
+        --planner_barrier_beta 100.0 \
+        > "${ISAACLAB_ROOT}/slurm_logs/run1_asac_${SLURM_JOB_ID}.log" 2>&1
+) &
+
+# ------------------------------------------------------------------------------
+# 3. RUN 2 (GPU 0 - Seed 1)
+# ------------------------------------------------------------------------------
+(
+    export CUDA_VISIBLE_DEVICES=0
+    export PORTABLE_ROOT="${COMPASS_ROOT}/kit_portable/job_${USER}_${SLURM_JOB_ID}_run2"
+
+    mkdir -p "${PORTABLE_ROOT}/kit_cache"
+    mkdir -p "${PORTABLE_ROOT}/kit_data"
+    mkdir -p "${PORTABLE_ROOT}/kit_logs"
+    mkdir -p "${PORTABLE_ROOT}/kit_documents"
+
+    # IMPORTANT: source helpers AFTER PORTABLE_ROOT is defined
+    source "${COMPASS_ROOT}/isaac_helpers.sh"
+
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Launching Run 2 (Seed 1) on Shared GPU 0..."
+
+    sleep 120
+
+    isaacrun compass_algorithm/train_compass_v2.py --headless \
+        --device cuda:0 \
+        --algo accel_sac \
+        --seed 1 \
+        --num_envs 1 \
+        --total_timesteps 50_000_000 \
+        --asac_beta_0 10.0 \
+        --asac_plateau_steps 200_000 \
+        --asac_decay_steps 500_000 \
+        --asac_c2_noise 0.01 \
+        --action_mode x_yaw \
+        --max_steps 6_000 \
+        --goal_reward 100.0 \
+        --crash_cost 200.0 \
+        --step_cost 1.0 \
+        --w_progress 50.0 \
+        --goal_tol 0.3 \
+        --robot_radius 0.3 \
+        --leg_reach_margin 0.02 \
+        --wall_margin 0.35 \
+        --planner_horizon 15 \
+        --planner_max_vel 0.5 \
+        --planner_barrier_beta 100.0 \
+        > "${ISAACLAB_ROOT}/slurm_logs/run2_asac_${SLURM_JOB_ID}.log" 2>&1
+) &
+
+# ------------------------------------------------------------------------------
+# 4. RUN 3 (GPU 0 - Seed 2)
+# ------------------------------------------------------------------------------
+(
+    export CUDA_VISIBLE_DEVICES=0
+    export PORTABLE_ROOT="${COMPASS_ROOT}/kit_portable/job_${USER}_${SLURM_JOB_ID}_run3"
+
+    mkdir -p "${PORTABLE_ROOT}/kit_cache"
+    mkdir -p "${PORTABLE_ROOT}/kit_data"
+    mkdir -p "${PORTABLE_ROOT}/kit_logs"
+    mkdir -p "${PORTABLE_ROOT}/kit_documents"
+
+    # IMPORTANT: source helpers AFTER PORTABLE_ROOT is defined
+    source "${COMPASS_ROOT}/isaac_helpers.sh"
+
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Launching Run 3 (Seed 2) on Shared GPU 0..."
+
+    sleep 240
+
+    isaacrun compass_algorithm/train_compass_v2.py --headless \
+        --device cuda:0 \
+        --algo accel_sac \
+        --seed 2 \
+        --num_envs 1 \
+        --total_timesteps 50_000_000 \
+        --asac_beta_0 10.0 \
+        --asac_plateau_steps 200_000 \
+        --asac_decay_steps 500_000 \
+        --asac_c2_noise 0.01 \
+        --action_mode x_yaw \
+        --max_steps 6_000 \
+        --goal_reward 100.0 \
+        --crash_cost 200.0 \
+        --step_cost 1.0 \
+        --w_progress 50.0 \
+        --goal_tol 0.3 \
+        --robot_radius 0.3 \
+        --leg_reach_margin 0.02 \
+        --wall_margin 0.35 \
+        --planner_horizon 15 \
+        --planner_max_vel 0.5 \
+        --planner_barrier_beta 100.0 \
+        > "${ISAACLAB_ROOT}/slurm_logs/run3_asac_${SLURM_JOB_ID}.log" 2>&1
+) &
+
+# ------------------------------------------------------------------------------
+# 5. RUN 4 (GPU 0 - Seed 3)
+# ------------------------------------------------------------------------------
+(
+    export CUDA_VISIBLE_DEVICES=0
+    export PORTABLE_ROOT="${COMPASS_ROOT}/kit_portable/job_${USER}_${SLURM_JOB_ID}_run4"
+
+    mkdir -p "${PORTABLE_ROOT}/kit_cache"
+    mkdir -p "${PORTABLE_ROOT}/kit_data"
+    mkdir -p "${PORTABLE_ROOT}/kit_logs"
+    mkdir -p "${PORTABLE_ROOT}/kit_documents"
+
+    # IMPORTANT: source helpers AFTER PORTABLE_ROOT is defined
+    source "${COMPASS_ROOT}/isaac_helpers.sh"
+
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Launching Run 4 (Seed 3) on Shared GPU 0..."
+
+    sleep 360
+
+    isaacrun compass_algorithm/train_compass_v2.py --headless \
+        --device cuda:0 \
+        --algo accel_sac \
+        --seed 3 \
+        --num_envs 1 \
+        --total_timesteps 50_000_000 \
+        --asac_beta_0 10.0 \
+        --asac_plateau_steps 200_000 \
+        --asac_decay_steps 500_000 \
+        --asac_c2_noise 0.01 \
+        --action_mode x_yaw \
+        --max_steps 6_000 \
+        --goal_reward 100.0 \
+        --crash_cost 200.0 \
+        --step_cost 1.0 \
+        --w_progress 50.0 \
+        --goal_tol 0.3 \
+        --robot_radius 0.3 \
+        --leg_reach_margin 0.02 \
+        --wall_margin 0.35 \
+        --planner_horizon 15 \
+        --planner_max_vel 0.5 \
+        --planner_barrier_beta 100.0 \
+        > "${ISAACLAB_ROOT}/slurm_logs/run4_asac_${SLURM_JOB_ID}.log" 2>&1
+) &
+
+# ------------------------------------------------------------------------------
+# 6. RUN 5 (GPU 0 - Seed 4)
+# ------------------------------------------------------------------------------
+(
+    export CUDA_VISIBLE_DEVICES=0
+    export PORTABLE_ROOT="${COMPASS_ROOT}/kit_portable/job_${USER}_${SLURM_JOB_ID}_run5"
+
+    mkdir -p "${PORTABLE_ROOT}/kit_cache"
+    mkdir -p "${PORTABLE_ROOT}/kit_data"
+    mkdir -p "${PORTABLE_ROOT}/kit_logs"
+    mkdir -p "${PORTABLE_ROOT}/kit_documents"
+
+    # IMPORTANT: source helpers AFTER PORTABLE_ROOT is defined
+    source "${COMPASS_ROOT}/isaac_helpers.sh"
+
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Launching Run 5 (Seed 4) on Shared GPU 0..."
+
+    sleep 480
+
+    isaacrun compass_algorithm/train_compass_v2.py --headless \
+        --device cuda:0 \
+        --algo accel_sac \
+        --seed 4 \
+        --num_envs 1 \
+        --total_timesteps 50_000_000 \
+        --asac_beta_0 10.0 \
+        --asac_plateau_steps 200_000 \
+        --asac_decay_steps 500_000 \
+        --asac_c2_noise 0.01 \
+        --action_mode x_yaw \
+        --max_steps 6_000 \
+        --goal_reward 100.0 \
+        --crash_cost 200.0 \
+        --step_cost 1.0 \
+        --w_progress 50.0 \
+        --goal_tol 0.3 \
+        --robot_radius 0.3 \
+        --leg_reach_margin 0.02 \
+        --wall_margin 0.35 \
+        --planner_horizon 15 \
+        --planner_max_vel 0.5 \
+        --planner_barrier_beta 100.0 \
+        > "${ISAACLAB_ROOT}/slurm_logs/run5_asac_${SLURM_JOB_ID}.log" 2>&1
+) &
+
+# ------------------------------------------------------------------------------
+# 7. Wait for Completion
+# ------------------------------------------------------------------------------
+wait
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Job ${SLURM_JOB_ID} completed successfully."

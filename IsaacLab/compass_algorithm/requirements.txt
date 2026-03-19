@@ -1,0 +1,24 @@
+# --- Core RL Framework ---
+# Use 2.7.1 as it has better support for Gymnasium 1.0+
+stable-baselines3[extra]==2.7.1
+# Latest stable Shimmy is 2.0.0
+shimmy[gym-v21]==2.0.0
+# Isaac Lab requires Gymnasium 1.2.0 for memory leak fixes
+gymnasium==1.2.0
+
+# --- Math & Planning (REAP) ---
+sympy>=1.12
+numpy<2.0.0
+scipy>=1.10.0
+
+# --- Logging & Visualization ---
+tensorboard>=2.15.0
+matplotlib>=3.7.0
+pandas>=2.0.0
+prettytable>=3.9.0
+
+# --- Infrastructure Helpers ---
+ninja
+warp-lang>=1.0.0
+h5py>=3.10.0
+flatdict>=4.0.1

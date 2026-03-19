@@ -1,0 +1,17 @@
+# 1. Setup paths relative to the new location
+export ISAACLAB_ROOT=/mimer/NOBACKUP/groups/naiss2024-22-1645/Paper_CDC/IsaacLab
+export COMPASS_ROOT="$ISAACLAB_ROOT/compass_algorithm"
+export IL_ROOT="$ISAACLAB_ROOT/compass_algorithm"
+
+# 2. Setup the write-permissions (Kit Portable)
+export PORTABLE_ROOT="$COMPASS_ROOT/kit_portable/job_${USER}_manual"
+mkdir -p "$PORTABLE_ROOT"
+
+# 3. Load helpers from the new location
+source "$COMPASS_ROOT/isaac_helpers.sh"
+
+# 4. Enter IsaacLab and RUN
+cd "$ISAACLAB_ROOT"
+
+# Now the container sees /workspace/compass_algorithm/train_compass.py perfectly!
+isaacrun compass_algorithm/train_compass.py --headless --video --num_envs 1

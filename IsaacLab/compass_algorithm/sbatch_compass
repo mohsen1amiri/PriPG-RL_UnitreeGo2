@@ -1,0 +1,90 @@
+#!/bin/bash
+# ==============================================================================
+# P2P-SAC Algorithm Training Script
+# ==============================================================================
+#SBATCH --account=naiss2025-22-1453
+#SBATCH --partition=alvis
+#SBATCH --gpus-per-node=T4:1
+#SBATCH --time=7-00:00:00
+#SBATCH --job-name=COMPASS_Go2_run3_3Dxy
+#SBATCH --output=slurm_logs/compass_%j.out
+#SBATCH --error=slurm_logs/compass_%j.err
+#SBATCH --mail-type=END,FAIL
+# ==============================================================================
+
+set -e
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting P2P-SAC training job (ID: ${SLURM_JOB_ID}) on node ${SLURMD_NODENAME}."
+
+# ------------------------------------------------------------------------------
+# 1. Environment & Path Configuration
+# ------------------------------------------------------------------------------
+export ISAACLAB_ROOT="/mimer/NOBACKUP/groups/naiss2024-22-1645/Paper_CDC/IsaacLab"
+export COMPASS_ROOT="${ISAACLAB_ROOT}/compass_algorithm"
+export IL_ROOT="${ISAACLAB_ROOT}/compass_algorithm"
+
+# Create log directory for SLURM outputs
+mkdir -p "${ISAACLAB_ROOT}/slurm_logs"
+
+# Use the unique Job ID for Kit Portable
+export PORTABLE_ROOT="${COMPASS_ROOT}/kit_portable/job_${USER}_${SLURM_JOB_ID}"
+
+# FIX: Explicitly create the subdirectories that Singularity needs to mount!
+mkdir -p "${PORTABLE_ROOT}/kit_cache"
+mkdir -p "${PORTABLE_ROOT}/kit_data"
+mkdir -p "${PORTABLE_ROOT}/kit_logs"
+mkdir -p "${PORTABLE_ROOT}/kit_documents"
+
+# ------------------------------------------------------------------------------
+# 2. Source Dependencies
+# ------------------------------------------------------------------------------
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Loading Isaac Lab helpers..."
+source "${COMPASS_ROOT}/isaac_helpers.sh"
+
+
+# ------------------------------------------------------------------------------
+# 3. Execute Training
+# ------------------------------------------------------------------------------
+cd "${ISAACLAB_ROOT}"
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Launching Isaac Lab training script..."
+
+# Execute P2P-SAC with a fully categorized parameter grid
+isaacrun compass_algorithm/train_compass.py --headless \
+    `# --- Algorithm & Reproducibility ---` \
+    --algo compass \
+    --seed 42 \
+    `# --- Ablation Studies ---` \
+    --ablation_maturation none \
+    --ablation_beta none \
+    `# --- Core Simulation Settings ---` \
+    --num_envs 1 \
+    --total_timesteps 50_000_000 \
+    --video \
+    --video_length 2_000 \
+    --video_interval 10_000 \
+    `# --- P2P-SAC Maturation & Trend Stationarity Hyperparameters ---` \
+    --anchor_weight 1.0 \
+    --gate_tau 1.0 \
+    --stationarity_tolerance 1e-3 \
+    --patience_window 1_000 \
+    --confidence_delta 0.01 \
+    --loss_range_b 4.0 \
+    --burn_in_steps 10_000 \
+    --beta_min 0.9 \
+    `# --- Environment & Reward Logic ---` \
+    --use_3d_action \
+    --max_steps 6_000 \
+    --goal_reward 100.0 \
+    --crash_cost 200.0 \
+    --step_cost 1.0 \
+    --w_progress 50.0 \
+    --goal_tol 0.3 \
+    `# --- Physical Hitboxes & Margins ---` \
+    --robot_radius 0.3 \
+    --leg_reach_margin 0.02 \
+    --wall_margin 0.35 \
+    `# --- REAP Expert Planner ---` \
+    --planner_horizon 15 \
+    --planner_max_vel 0.25 \
+    --planner_barrier_beta 100.0
+
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Job ${SLURM_JOB_ID} completed successfully."
