@@ -143,19 +143,6 @@ The `locomotion_policy/` directory contains a pre-trained low-level policy that 
 
 This project is licensed under the [MIT License](LICENSE).
 
----
-
-## Citation
-
-If you use this code in your research, please cite:
-```bibtex
-@misc{amiri2026pripg,
-  author       = {Mohsen Amiri},
-  title        = {{PriPG-RL}: Priority-guided Policy Gradient Reinforcement Learning for Autonomous Navigation of the Unitree Go2},
-  year         = {2026},
-  howpublished = {\url{https://github.com/mohsen1amiri/PriPG-RL_UnitreeGo2}}
-}
-```
 
 ---
 
